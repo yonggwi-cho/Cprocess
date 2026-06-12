@@ -1,0 +1,7 @@
+build/
+*.vtu
+*.o
+*.a
+compile_commands.json
+.cache/
+.vscode/
