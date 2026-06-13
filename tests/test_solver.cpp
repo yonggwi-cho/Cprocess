@@ -40,6 +40,20 @@ int main() {
   for (int i = 0; i < n; ++i) CHECK_NEAR(x[i], xtrue[i], 1e-6);
   std::printf("bicgstab: %d iters, resid %.2e\n", r.iters, r.resid);
 
+  // GMRES: use n=50 so GMRES(30) converges within the restart budget.
+  // (1D Laplacian has κ ~ n^2; for n=200 GMRES(30) needs too many restarts.)
+  {
+    const int ng = 50;
+    CSR ag = laplacian1d(ng);
+    std::vector<double> xg, bg(ng), xtg(ng);
+    for (int i = 0; i < ng; ++i) xtg[i] = std::sin(0.1*i) + 0.5;
+    ag.mul(xtg, bg);
+    SolveResult rg = gmres_jacobi(ag, bg, xg, 1e-12, 2000, 30);
+    CHECK(rg.converged);
+    for (int i = 0; i < ng; ++i) CHECK_NEAR(xg[i], xtg[i], 1e-6);
+    std::printf("gmres(30): %d iters, resid %.2e\n", rg.iters, rg.resid);
+  }
+
   // Zero RHS edge case.
   std::vector<double> zb(n, 0.0);
   r = cg_jacobi(a, zb, x, 1e-12, 100);

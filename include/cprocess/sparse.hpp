@@ -28,4 +28,10 @@ SolveResult cg_jacobi(const CSR& A, const std::vector<double>& b,
 SolveResult bicgstab_jacobi(const CSR& A, const std::vector<double>& b,
                             std::vector<double>& x, double rtol, int maxit);
 
+// Jacobi-preconditioned restarted GMRES(restart).
+// Arnoldi + Givens rotations, right-preconditioned (M^{-1} = Jacobi).
+SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
+                         std::vector<double>& x, double rtol, int maxit,
+                         int restart = 30);
+
 }  // namespace cp
