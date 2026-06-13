@@ -7,6 +7,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+find_package(OpenMP)
 find_package(Threads REQUIRED)
 
 add_library(cprocess_core
@@ -23,6 +24,12 @@ add_library(cprocess_core
   src/deck.cpp)
 target_include_directories(cprocess_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cprocess_core PUBLIC Threads::Threads)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(cprocess_core PUBLIC OpenMP::OpenMP_CXX)
+  message(STATUS "OpenMP enabled")
+else()
+  message(STATUS "OpenMP not found — running single-threaded")
+endif()
 if(NOT MSVC)
   target_compile_options(cprocess_core PRIVATE -Wall -Wextra)
 endif()

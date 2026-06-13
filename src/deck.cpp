@@ -268,6 +268,7 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
     p.ions = static_cast<long long>(c.num_or("ions", Unit::none, 100000));
     p.threads = static_cast<int>(c.num_or("threads", Unit::none, 0));
     p.seed = static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1));
+    p.channeling = (c.num_or("channeling", Unit::none, 0) != 0);
     if (p.energy_kev > 500)
       log << "[implant] warning: E > 500 keV is outside the validity of the "
              "Lindhard-Scharff stopping model\n";

@@ -35,6 +35,7 @@ struct McImplantParams {
   long long ions = 100000;
   int threads = 0;          // 0 = hardware concurrency
   std::uint64_t seed = 1;
+  bool channeling = false;  // enable crystal-channeling model (Si target only)
 };
 
 struct McImplantStats {

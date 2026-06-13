@@ -173,11 +173,49 @@ static void test_window() {
               far / std::max(peak, 1.0));
 }
 
+// ---------------------------------------------------------------------------
+// Channeling test: B 50 keV along Si <100> should have deeper Rp than the
+// amorphous case (channeling "tail" shifts the mean depth).  We also verify
+// that enabling channeling does not break dose accounting.
+// ---------------------------------------------------------------------------
+static void test_channeling() {
+  const double um = 1e-4;
+  // Deeper box (1.5 um) so channeled ions don't transmit.
+  Mesh mesh = make_box_mesh(0, 0.4*um, 0, 0.4*um, 0, 1.5*um, 8, 8, 120);
+
+  auto run = [&](bool ch) {
+    McImplantParams p;
+    p.dopant = find_dopant("B");
+    p.dose   = 1e13;
+    p.energy_kev = 50;
+    p.ions   = 20000;
+    p.seed   = 17;
+    p.channeling = ch;
+    std::vector<char> mask(mesh.cells.size(), 1);
+    std::vector<double> conc(mesh.cells.size(), 0.0);
+    return apply_mc_implant(mesh, mask, p, conc);
+  };
+
+  const McImplantStats sa = run(false);
+  const McImplantStats sc = run(true);
+
+  std::printf("channeling: amorphous Rp=%.1f nm, crystal Rp=%.1f nm\n",
+              sa.rp*1e7, sc.rp*1e7);
+
+  // Channeling ions travel deeper on average (Rp_crystal > Rp_amorphous).
+  CHECK(sc.rp > sa.rp);
+  // Dose accounting must still close.
+  const long long ions = 20000;
+  CHECK(sc.deposited + sc.backscattered + sc.transmitted +
+        sc.out_of_domain + sc.in_mask + sc.unbinned == ions);
+}
+
 int main() {
   test_table_vs_integral();
   test_physics_and_binning();
   test_thread_determinism();
   test_window();
+  test_channeling();
   std::printf("mc tests passed\n");
   return 0;
 }
