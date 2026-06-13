@@ -23,6 +23,7 @@ add_library(cprocess_core
   src/vtk_writer.cpp
   src/deck.cpp)
 target_include_directories(cprocess_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set_target_properties(cprocess_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(cprocess_core PUBLIC Threads::Threads)
 if(OpenMP_CXX_FOUND)
   target_link_libraries(cprocess_core PUBLIC OpenMP::OpenMP_CXX)
@@ -43,3 +44,16 @@ foreach(t mesh solver gmsh diffusion mc)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})
 endforeach()
+
+# Python bindings (optional — requires pybind11)
+find_package(pybind11 CONFIG QUIET)
+if(pybind11_FOUND)
+  pybind11_add_module(_cprocess python/_cprocess.cpp)
+  target_link_libraries(_cprocess PRIVATE cprocess_core)
+  # Install the .so next to the cprocess Python package directory
+  install(TARGETS _cprocess
+          LIBRARY DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/python/cprocess)
+  message(STATUS "Python bindings enabled")
+else()
+  message(STATUS "pybind11 not found — Python bindings skipped")
+endif()
