@@ -16,6 +16,8 @@ struct Dopant {
   std::string name;     // canonical lowercase name, e.g. "boron"
   std::string symbol;   // display symbol, e.g. "B"
   DopType type = DopType::donor;
+  int z = 0;            // atomic number
+  double m = 0;         // implanted isotope mass [amu]
   double d0 = 0, e0 = 0;        // neutral
   double dm = 0, em = 0;        // single negative (donors)
   double dmm = 0, emm = 0;      // double negative

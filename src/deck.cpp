@@ -12,6 +12,7 @@
 
 #include "cprocess/gmsh_reader.hpp"
 #include "cprocess/implant.hpp"
+#include "cprocess/mc_implant.hpp"
 #include "cprocess/vtk_writer.hpp"
 
 namespace cp {
@@ -233,9 +234,67 @@ void cmd_init(SimState& st, const Cmd& c, std::ostream& log) {
 
 void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
   need_mesh(st, c);
+  const Dopant* dop = dopant_arg(c);
+  const double dose = c.num("dose", Unit::none);
+
+  bool has_window = false;
+  double wx1 = 0, wx2 = 0, wy1 = 0, wy2 = 0;
+  const int nw = c.has("x1") + c.has("x2") + c.has("y1") + c.has("y2");
+  if (nw == 4) {
+    has_window = true;
+    wx1 = c.num("x1", Unit::length);
+    wx2 = c.num("x2", Unit::length);
+    wy1 = c.num("y1", Unit::length);
+    wy2 = c.num("y2", Unit::length);
+    if (!(wx2 > wx1) || !(wy2 > wy1)) c.fail("window must have x2>x1, y2>y1");
+  } else if (nw != 0) {
+    c.fail("mask window needs all of x1=, x2=, y1=, y2=");
+  }
+
+  auto& f = st.fields[dop->symbol];
+  f.resize(st.mesh.cells.size(), 0.0);
+  const std::string method =
+      c.has("method") ? lower(c.kv.at("method")) : std::string("gauss");
+
+  if (method == "mc" || method == "montecarlo") {
+    McImplantParams p;
+    p.dopant = dop;
+    p.dose = dose;
+    p.energy_kev = c.num("energy", Unit::energy);
+    p.tilt_deg = c.num_or("tilt", Unit::none, 0);
+    p.rotation_deg = c.num_or("rotation", Unit::none, 0);
+    p.has_window = has_window;
+    p.x1 = wx1; p.x2 = wx2; p.y1 = wy1; p.y2 = wy2;
+    p.ions = static_cast<long long>(c.num_or("ions", Unit::none, 100000));
+    p.threads = static_cast<int>(c.num_or("threads", Unit::none, 0));
+    p.seed = static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1));
+    if (p.energy_kev > 500)
+      log << "[implant] warning: E > 500 keV is outside the validity of the "
+             "Lindhard-Scharff stopping model\n";
+
+    const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f);
+    const double n = static_cast<double>(p.ions);
+    log << "[implant] " << dop->symbol << " MC: dose=" << fmt("%.3g", p.dose)
+        << " cm^-2, E=" << fmt("%.4g", p.energy_kev) << " keV, " << p.ions
+        << " ions, tilt=" << fmt("%.3g", p.tilt_deg) << " deg\n";
+    log << "[implant]   deposited " << fmt("%.1f", 100.0 * s.deposited / n)
+        << "% (Rp=" << fmt("%.4g", s.rp * 1e4) << " um, dRp="
+        << fmt("%.4g", s.drp * 1e4) << " um), backscattered "
+        << fmt("%.2f", 100.0 * s.backscattered / n) << "%, transmitted "
+        << fmt("%.2f", 100.0 * s.transmitted / n) << "%, out-of-domain "
+        << fmt("%.2f", 100.0 * s.out_of_domain / n) << "%, in-mask "
+        << fmt("%.2f", 100.0 * s.in_mask / n) << "%\n";
+    if (s.unbinned > 0)
+      log << "[implant] warning: " << s.unbinned
+          << " ions rested in no cell (mesh holes?)\n";
+    return;
+  }
+  if (method != "gauss" && method != "gaussian" && method != "analytic")
+    c.fail("unknown method '" + method + "' (gauss or mc)");
+
   ImplantParams p;
-  p.dopant = dopant_arg(c);
-  p.dose = c.num("dose", Unit::none);
+  p.dopant = dop;
+  p.dose = dose;
   if (c.has("rp") || c.has("drp")) {
     p.rp = c.num("rp", Unit::length);
     p.drp = c.num("drp", Unit::length);
@@ -249,20 +308,9 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
           << tab.front()[0] << "-" << tab.back()[0] << " keV), clamped\n";
   }
   p.drl = c.num_or("drl", Unit::length, 0);
-  const int nw = c.has("x1") + c.has("x2") + c.has("y1") + c.has("y2");
-  if (nw == 4) {
-    p.has_window = true;
-    p.x1 = c.num("x1", Unit::length);
-    p.x2 = c.num("x2", Unit::length);
-    p.y1 = c.num("y1", Unit::length);
-    p.y2 = c.num("y2", Unit::length);
-    if (!(p.x2 > p.x1) || !(p.y2 > p.y1)) c.fail("window must have x2>x1, y2>y1");
-  } else if (nw != 0) {
-    c.fail("mask window needs all of x1=, x2=, y1=, y2=");
-  }
+  p.has_window = has_window;
+  p.x1 = wx1; p.x2 = wx2; p.y1 = wy1; p.y2 = wy2;
 
-  auto& f = st.fields[p.dopant->symbol];
-  f.resize(st.mesh.cells.size(), 0.0);
   const double atoms = apply_implant(st.mesh, silicon_mask(st), p, f);
   const BBox b = st.mesh.bbox();
   const double area = p.has_window ? (p.x2 - p.x1) * (p.y2 - p.y1)

@@ -1,0 +1,18 @@
+# Monte Carlo (BCA) boron implant followed by a short anneal.
+#
+#   cprocess examples/mc_implant.in
+#   -> mc_implant.vtu
+
+mesh box xmax=0.4um ymax=0.4um zmax=0.8um nx=10 ny=10 nz=60
+
+init species=P conc=1e15
+
+# 200k ion histories, all hardware threads; rerunning with any thread
+# count reproduces the same profile bit-for-bit (fixed seed).
+implant species=B energy=50keV dose=1e13 method=mc ions=200000 seed=7
+print
+
+diffuse time=10min temp=1000C dt=30s
+
+print
+save file=mc_implant.vtu

@@ -29,6 +29,9 @@ struct SimState {
 //   init species=B conc=1e15 [region=N|NAME]
 //   implant species=P dose=1e13 {energy=80keV | rp=0.1um drp=0.04um}
 //           [drl=0.03um] [x1= x2= y1= y2=]      (mask window)
+//   implant species=B dose=1e13 energy=50keV method=mc
+//           [ions=100000] [threads=0] [seed=1] [tilt=7] [rotation=30]
+//           [x1= x2= y1= y2=]                   (Monte Carlo / BCA)
 //   bc species=P patch=zmax conc=1e20 | bc clear
 //   diffuse time=30min temp=1000C [dt=30s] [fieldenh=on|off] [nonortho=on|off]
 //   save [file=out.vtu]
