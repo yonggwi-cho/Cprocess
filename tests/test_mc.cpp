@@ -88,6 +88,7 @@ static McImplantStats run_implant(const Mesh& mesh, long long ions,
   p.ions = ions;
   p.threads = threads;
   p.seed = seed;
+  p.channeling = false;  // amorphous mode: bit-identical across thread counts
   std::vector<char> mask(mesh.cells.size(), 1);
   conc.assign(mesh.cells.size(), 0.0);
   return apply_mc_implant(mesh, mask, p, conc);

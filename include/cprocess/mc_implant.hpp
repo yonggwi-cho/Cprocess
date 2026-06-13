@@ -8,22 +8,23 @@
 namespace cp {
 
 // Monte Carlo ion implantation in the binary collision approximation
-// (TRIM-style, amorphous target):
+// (TRIM-style):
 //
-//  - free flight of one interatomic distance L = N^(-1/3) between
-//    collisions; impact parameter p = p_max sqrt(U) with pi p_max^2 L N = 1
-//  - nuclear scattering from the ZBL universal potential: the exact
-//    classical scattering integral, precomputed once on a log-log
-//    (eps, b) table and interpolated bilinearly (corteo-style); validated
-//    in the test suite against an independent quadrature
-//  - Lindhard-Scharff electronic stopping  S_e = k sqrt(E)
-//  - every region uses silicon stopping powers (masks are not yet
-//    distinguished); the target is amorphous, so channeling is absent
+//  - free flight L = N^(-1/3) between collisions; impact parameter drawn
+//    uniformly in [b_min, pmax] area, pi*pmax^2*L*N = 1
+//  - nuclear scattering: ZBL potential, exact classical scattering integral
+//    on a 160x160 log-log (eps,b) table, bilinear interpolation (corteo-style)
+//  - Lindhard-Scharff electronic stopping S_e = k*sqrt(E)
 //
-// Parallel design: ion histories are partitioned into fixed-size chunks,
-// each with its own counter-seeded RNG stream; workers accumulate integer
-// per-cell hit counts and per-chunk moment partials, which are reduced
-// deterministically. Results are bit-identical for any thread count.
+// Crystal channeling (enabled by default):
+//  - Lindhard-Robinson continuum string potential for Si <100>/<110>/<111>
+//  - Channeling criterion per step: E*sin^2(psi) < U_max*(1-f_amor)
+//  - f_amor = damage_density / kNamorph from Kinchin-Pease displacement counts
+//  - All threads share the damage array via OpenMP atomic updates so every
+//    ion sees the accumulated crystal damage in real time; this improves
+//    physical accuracy at the cost of non-determinism across thread counts
+//  - Amorphous mode (channeling=false): results are bit-identical for any
+//    thread count (deterministic chunk-based RNG streams)
 struct McImplantParams {
   const Dopant* dopant = nullptr;
   double dose = 0;          // cm^-2
@@ -35,7 +36,7 @@ struct McImplantParams {
   long long ions = 100000;
   int threads = 0;          // 0 = hardware concurrency
   std::uint64_t seed = 1;
-  bool channeling = false;  // enable crystal-channeling model (Si target only)
+  bool channeling = true;   // crystal channeling + damage accumulation (Si)
 };
 
 struct McImplantStats {
@@ -50,10 +51,13 @@ struct McImplantStats {
 };
 
 // Adds the implanted profile to `conc` (cm^-3) for silicon cells.
+// If `damage_conc` is non-null and channeling is enabled, it is filled with
+// the displaced-atom density profile [cm^-3] (Kinchin-Pease model).
 McImplantStats apply_mc_implant(const Mesh& mesh,
                                 const std::vector<char>& silicon_mask,
                                 const McImplantParams& p,
-                                std::vector<double>& conc);
+                                std::vector<double>& conc,
+                                std::vector<double>* damage_conc = nullptr);
 
 namespace mc {
 // Exposed for validation tests.
