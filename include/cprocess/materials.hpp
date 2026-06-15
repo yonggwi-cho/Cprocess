@@ -1,0 +1,50 @@
+#pragma once
+#include <array>
+#include <string>
+#include <vector>
+
+namespace cp {
+
+constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
+
+enum class DopType { donor, acceptor };
+
+// Dopant in silicon, Fair's charged point-defect (vacancy) model:
+//   D = D0 + Dminus*(n/ni) + Ddminus*(n/ni)^2 + Dplus*(p/ni)   [cm^2/s]
+// with each term DX = dX * exp(-eX / kT).
+struct Dopant {
+  std::string name;     // canonical lowercase name, e.g. "boron"
+  std::string symbol;   // display symbol, e.g. "B"
+  DopType type = DopType::donor;
+  int z = 0;            // atomic number
+  double m = 0;         // implanted isotope mass [amu]
+  double d0 = 0, e0 = 0;        // neutral
+  double dm = 0, em = 0;        // single negative (donors)
+  double dmm = 0, emm = 0;      // double negative
+  double dp = 0, ep = 0;        // single positive (acceptors)
+  double ss_pre = 0, ss_e = 0;  // solid solubility Arrhenius fit [cm^-3, eV]
+  // Approximate projected range table {energy keV, Rp cm, dRp cm};
+  // override with rp=/drp= in the deck for accurate work.
+  std::vector<std::array<double, 3>> range;
+};
+
+// Case-insensitive lookup by name or symbol ("B", "boron", ...); nullptr if
+// unknown.
+const Dopant* find_dopant(const std::string& name);
+const std::vector<Dopant>& dopant_table();
+
+// Intrinsic carrier density of silicon, Morin & Maita fit:
+//   ni = 3.87e16 * T^1.5 * exp(-0.605 eV / kT)   [cm^-3]
+double ni_si(double temp_k);
+
+// Diffusivity at given T and normalized electron density n/ni.
+double dopant_diffusivity(const Dopant& d, double temp_k, double n_over_ni);
+
+// Approximate solid solubility (electrically active limit) [cm^-3].
+double solid_solubility(const Dopant& d, double temp_k);
+
+// Interpolates the range table (linear in log E). Returns false if the
+// dopant has no table; clamps outside the tabulated energy range.
+bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp);
+
+}  // namespace cp

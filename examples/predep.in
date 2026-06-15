@@ -1,0 +1,20 @@
+# Phosphorus predeposition from a constant surface source, then drive-in.
+#
+#   cprocess examples/predep.in
+#   -> predep.vtu
+
+mesh box xmax=0.5um ymax=0.5um zmax=1um nx=8 ny=8 nz=64
+
+# p-type substrate
+init species=B conc=1e16
+
+# predeposition: surface held at the solubility-ish concentration
+bc species=P patch=zmax conc=7e20
+diffuse time=20min temp=950C dt=30s
+bc clear
+
+# drive-in pushes the junction deeper
+diffuse time=40min temp=1100C dt=60s
+
+print
+save file=predep.vtu

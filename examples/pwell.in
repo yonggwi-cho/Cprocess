@@ -1,0 +1,20 @@
+# p-well formation: masked boron implant into an n-type substrate,
+# followed by a drive-in anneal.
+#
+#   cprocess examples/pwell.in
+#   -> pwell.vtu (open in ParaView; NetDoping shows the well junction)
+
+mesh box xmax=1um ymax=1um zmax=1.5um nx=12 ny=12 nz=40
+
+# n-type substrate background
+init species=P conc=1e15
+
+# boron through a 0.5 x 0.5 um mask window centred on the surface
+implant species=B energy=60keV dose=2e13 x1=0.25um x2=0.75um y1=0.25um y2=0.75um
+print
+
+# drive-in
+diffuse time=60min temp=1100C dt=60s
+
+print
+save file=pwell.vtu

@@ -1,0 +1,12 @@
+build/
+*.vtu
+*.o
+*.a
+compile_commands.json
+.cache/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.so
