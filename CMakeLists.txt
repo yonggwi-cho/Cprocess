@@ -16,6 +16,8 @@ add_library(cprocess_core
   src/cell_locator.cpp
   src/gmsh_reader.cpp
   src/sparse.cpp
+  src/topology.cpp
+  src/remesh.cpp
   src/materials.cpp
   src/implant.cpp
   src/mc_implant.cpp
@@ -39,7 +41,7 @@ add_executable(cprocess src/main.cpp)
 target_link_libraries(cprocess PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc)
+foreach(t mesh solver gmsh diffusion mc remesh)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})
