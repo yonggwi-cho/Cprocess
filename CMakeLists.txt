@@ -18,6 +18,11 @@ add_library(cprocess_core
   src/sparse.cpp
   src/topology.cpp
   src/remesh.cpp
+  src/ale_mover.cpp
+  src/oxidation.cpp
+  src/field_transfer.cpp
+  src/levelset.cpp
+  src/mechanics.cpp
   src/materials.cpp
   src/implant.cpp
   src/mc_implant.cpp
@@ -41,7 +46,7 @@ add_executable(cprocess src/main.cpp)
 target_link_libraries(cprocess PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc remesh)
+foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})
