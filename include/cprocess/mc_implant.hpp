@@ -7,6 +7,29 @@
 
 namespace cp {
 
+// A stopping target for MC ion transport. Built-in helpers below provide
+// silicon (crystalline, channeling-capable), photoresist, and SiO2. Compounds
+// are modelled with Bragg-rule effective single-element constants (Z, M, N),
+// consistent with the binary-collision approximation used here.
+struct TargetMaterial {
+  const char* name = "Si";
+  int z = 14;            // effective atomic number
+  double m = 28.086;     // effective atomic mass [amu]
+  double n = 4.99e22;    // atomic density [cm^-3]
+  bool crystal_si = false;  // enables crystal channeling in this material
+};
+
+// Crystalline silicon substrate (channeling on when McImplantParams.channeling).
+TargetMaterial target_silicon();
+// Organic photoresist (DNQ-novolac), ~1.2 g/cm^3, carbon-dominated.
+TargetMaterial target_photoresist();
+// Thermal SiO2, ~2.2 g/cm^3.
+TargetMaterial target_oxide();
+// Near-vacuum / ambient: ~1000x less dense than a solid, so ions cross it
+// essentially undeflected. Use it to fill the developed (open) regions above a
+// patterned resist so ions reach the true silicon surface at the right depth.
+TargetMaterial target_vacuum();
+
 // Monte Carlo ion implantation in the binary collision approximation
 // (TRIM-style):
 //
@@ -37,6 +60,15 @@ struct McImplantParams {
   int threads = 0;          // 0 = hardware concurrency
   std::uint64_t seed = 1;
   bool channeling = true;   // crystal channeling + damage accumulation (Si)
+
+  // Physical (multi-material) masking. When cell_material is non-null, the ion
+  // is tracked through whatever material occupies each cell — e.g. a patterned
+  // photoresist layer that slows and stops ions before they reach the silicon,
+  // including lateral straggle under the mask edge. cell_material[ci] indexes
+  // into material_table; material_table[0] is the substrate. When cell_material
+  // is null, the whole domain is the single crystal-Si target as before.
+  const std::vector<int>* cell_material = nullptr;
+  std::vector<TargetMaterial> material_table;  // [0] = substrate
 };
 
 struct McImplantStats {

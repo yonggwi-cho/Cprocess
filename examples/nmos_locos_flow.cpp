@@ -111,33 +111,66 @@ int main() {
     print_stats("boron", c_boron, mesh.cell_vol);
   }
 
-  // ── 3. Phosphorus S/D implant with central mask ───────────────────────────
-  print_step(3, "Phosphorus S/D implant (masked)");
+  // ── 3. Phosphorus S/D implant through a PHYSICAL patterned resist ─────────
+  print_step(3, "Phosphorus S/D implant (physical photoresist gate)");
   {
     const Dopant* P = find_dopant("P");
     if (!P) { std::fprintf(stderr, "ERROR: phosphorus not found\n"); return 1; }
 
+    // Build a process stack on top of the substrate: Si [0,0.5 um] + a 0.5 um
+    // tall overlayer. A photoresist gate covers the channel x ∈ [0.35,0.65 um];
+    // the developed source/drain openings are filled with near-vacuum so ions
+    // reach the real silicon surface. The whole top is irradiated (no window) —
+    // masking is entirely physical: ions stop inside the resist or straggle
+    // laterally under its edge.
+    const double t_over = 0.5e-4;            // overlayer thickness
+    const double Lz_stack = Lz + t_over;
+    const double gate_x1 = 0.35e-4, gate_x2 = 0.65e-4;
+    Mesh stack = make_box_mesh(0, Lx, 0, Ly, 0, Lz_stack, NX, NY, NZ + 4);
+    const int nc_s = static_cast<int>(stack.cells.size());
+
+    // Material map: 0 = Si, 1 = photoresist, 2 = vacuum (open S/D).
+    enum { MAT_SI = 0, MAT_RESIST = 1, MAT_VAC = 2 };
+    std::vector<int> mat(nc_s, MAT_SI);
+    std::vector<char> stack_si(nc_s, 1);
+    for (int ci = 0; ci < nc_s; ++ci) {
+      const Vec3& c = stack.cell_cent[ci];
+      if (c.z <= Lz) continue;             // silicon substrate
+      stack_si[ci] = 0;                    // overlayer never accumulates dopant
+      const bool under_gate = (c.x >= gate_x1 && c.x <= gate_x2);
+      mat[ci] = under_gate ? MAT_RESIST : MAT_VAC;
+    }
+
     McImplantParams p;
-    p.dopant      = P;
-    p.dose        = 5e15;        // cm⁻²
-    p.energy_kev  = 30;
-    p.tilt_deg    = 0;
-    p.ions        = 50000;
-    p.channeling  = true;
-    p.seed        = 7;
+    p.dopant         = P;
+    p.dose           = 5e15;     // cm⁻²
+    p.energy_kev     = 30;
+    p.tilt_deg       = 0;
+    p.ions           = 80000;
+    p.channeling     = true;
+    p.seed           = 7;
+    p.material_table = {target_silicon(), target_photoresist(), target_vacuum()};
+    p.cell_material  = &mat;     // full-surface irradiation, physical mask
 
-    // Left window: x ∈ [0, 0.3 um]
-    p.has_window = true;
-    p.x1 = 0.0;   p.x2 = 0.3e-4;
-    p.y1 = 0.0;   p.y2 = Ly;
-    apply_mc_implant(mesh, si_mask, p, c_phos, nullptr);
+    std::vector<double> c_phos_stack(nc_s, 0.0);
+    const auto stats = apply_mc_implant(stack, stack_si, p, c_phos_stack, nullptr);
+    std::printf("  P 30keV: deposited(Si)=%lld  stopped_in_overlayer=%lld\n",
+                stats.deposited, stats.in_mask);
 
-    // Right window: x ∈ [0.7 um, 1 um]
-    p.x1 = 0.7e-4; p.x2 = Lx;
-    p.seed = 13;
-    const auto stats = apply_mc_implant(mesh, si_mask, p, c_phos, nullptr);
-    std::printf("  P 30keV (S/D): Rp=%.1f nm  deposited=%lld\n",
-                stats.rp * 1e7, stats.deposited);
+    // Lateral check: dopant under the gate vs in the open S/D, in silicon.
+    double q_gate = 0, q_open = 0;
+    for (int ci = 0; ci < nc_s; ++ci) {
+      if (!stack_si[ci]) continue;
+      const Vec3& c = stack.cell_cent[ci];
+      const double q = c_phos_stack[ci] * stack.cell_vol[ci];
+      if (c.x >= gate_x1 && c.x <= gate_x2) q_gate += q; else q_open += q;
+    }
+    std::printf("  silicon P dose: open=%.3e  under-gate=%.3e  blocking=%.0fx\n",
+                q_open, q_gate, q_open / (q_gate + 1e-30));
+
+    // Transfer the phosphorus from the stack's silicon onto the working mesh
+    // (P4 conservative nearest-cell transfer).
+    c_phos = transfer_field_nearest(stack, c_phos_stack, mesh);
     print_stats("phosphorus", c_phos, mesh.cell_vol);
   }
 

@@ -164,6 +164,26 @@ double sin2_half_theta(double eps, double b) { return scatter_table().sample(eps
 
 }  // namespace mc
 
+// Built-in stopping targets. Compounds use Bragg-rule effective Z/M and the
+// mass-density-derived atomic number density N.
+TargetMaterial target_silicon() {
+  return {"Si", kZt, kMt, kNt, true};
+}
+TargetMaterial target_photoresist() {
+  // DNQ-novolac ~ C-dominated organic, density ~1.2 g/cm^3. Effective carbon
+  // atom: Z=6, M=12; N = rho/M * N_A = 1.2/12 * 6.022e23.
+  return {"resist", 6, 12.0, 6.02e22, false};
+}
+TargetMaterial target_oxide() {
+  // SiO2, density 2.2 g/cm^3, 3 atoms per 60 g/mol -> 20 g/mol per atom.
+  // Effective Z = (14+8+8)/3 ~ 10, M ~ 20; N = 2.2/20 * 6.022e23.
+  return {"SiO2", 10, 20.0, 6.62e22, false};
+}
+TargetMaterial target_vacuum() {
+  // ~1000x rarefied air: large free flight, negligible stopping.
+  return {"vacuum", 7, 14.0, 5.0e19, false};
+}
+
 namespace {
 
 Vec3 deflect(const Vec3& d, double cpsi, double spsi, double phi) {
@@ -243,18 +263,45 @@ struct DamageStore {
 // Walk parameters and ion transport
 // ---------------------------------------------------------------------------
 
+// Precomputed ion-in-material stopping constants for one (dopant, target) pair.
+struct MatConstants {
+  double flight = 0, pmax = 0, inv_a = 0;
+  double eps_per_ev = 0, tmax_fac = 0, mass_ratio = 0, els_fac = 0;
+  bool crystal_si = false;
+  std::vector<CrystalAxis> chan_axes;  // populated only for crystal Si
+};
+
+MatConstants make_mat_constants(int z1, double m1, const TargetMaterial& t) {
+  MatConstants c;
+  const int z2 = t.z;
+  const double m2 = t.m, N = t.n;
+  c.flight     = std::pow(N, -1.0/3.0);
+  c.pmax       = c.flight / std::sqrt(M_PI);
+  c.inv_a      = 1.0 / mc::screening_length_cm(z1, z2);
+  c.eps_per_ev = mc::reduced_energy_per_ev(z1, m1, z2, m2);
+  c.tmax_fac   = 4.0*m1*m2/((m1+m2)*(m1+m2));
+  c.mass_ratio = m1/m2;
+  const double kls = 3.83e-15*std::pow(z1,7.0/6.0)*z2/
+      (std::pow(std::pow(z1,2.0/3.0)+std::pow(z2,2.0/3.0),1.5)*std::sqrt(m1));
+  c.els_fac    = N*c.flight*kls/std::sqrt(1000.0);
+  c.crystal_si = t.crystal_si;
+  return c;
+}
+
 struct WalkParams {
   double e0_ev = 0;
   Vec3 dir0;
-  double flight = 0, pmax = 0, inv_a = 0;
-  double eps_per_ev = 0, tmax_fac = 0, mass_ratio = 0, els_fac = 0;
   Vec3 lo, hi;
   bool wrap = false;
   double sx1, sx2, sy1, sy2;
+  // Per-material stopping constants; mats[0] is the substrate.
+  std::vector<MatConstants> mats;
+  bool single_material = true;             // true -> use mats[0], skip per-step locate
+  const std::vector<int>* cell_material = nullptr;
+  int default_mat = 0;                      // material when a cell is not found
   // Channeling
   bool channeling = false;
   double u1_sq = 0;
-  std::vector<CrystalAxis> chan_axes;
   // Damage — non-null when channeling is enabled
   DamageStore* damage = nullptr;
   const CellLocator* locator = nullptr;
@@ -273,7 +320,16 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
   };
 
   while (true) {
-    pos += w.flight * dir;
+    // Material the ion is currently traversing. In single-material mode this is
+    // always the substrate (no locate, preserving speed and determinism).
+    int mid = w.default_mat;
+    if (!w.single_material) {
+      const int ci = w.locator->locate(pos);
+      if (ci >= 0 && w.cell_material) mid = (*w.cell_material)[ci];
+    }
+    const MatConstants& mc_ = w.mats[mid];
+
+    pos += mc_.flight * dir;
     if (pos.z > w.hi.z) return Fate::backscattered;
     if (pos.z < w.lo.z) return Fate::transmitted;
     if (pos.x<w.lo.x||pos.x>w.hi.x||pos.y<w.lo.y||pos.y>w.hi.y) {
@@ -282,12 +338,12 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
       pos.y=wrap1(pos.y,w.lo.y,w.hi.y);
     }
 
-    // Channeling check: find nearest axis, adjust for local amorphization.
-    double eff_els = w.els_fac;
+    // Channeling only inside crystalline silicon.
+    double eff_els = mc_.els_fac;
     double b_min_sq = 0.0;
-    if (w.channeling) {
+    if (w.channeling && mc_.crystal_si) {
       double min_s2 = 1.0, u_max_best = 0.0;
-      for (const auto& ax : w.chan_axes) {
+      for (const auto& ax : mc_.chan_axes) {
         const double c = dot(dir, ax.dir);
         const double s2 = 1.0 - c*c;
         if (s2 < min_s2) { min_s2=s2; u_max_best=ax.u_max; }
@@ -300,7 +356,7 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
       }
       const double u_eff = u_max_best * (1.0 - f);
       if (e * min_s2 < u_eff) {
-        eff_els = w.els_fac * 1.2;
+        eff_els = mc_.els_fac * 1.2;
         b_min_sq = w.u1_sq;
       }
     }
@@ -310,14 +366,14 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
     if (e <= kEstopEv) break;
 
     // Binary nuclear collision.
-    const double p_sq = b_min_sq + rng.u()*(w.pmax*w.pmax - b_min_sq);
+    const double p_sq = b_min_sq + rng.u()*(mc_.pmax*mc_.pmax - b_min_sq);
     const double p    = std::sqrt(p_sq);
-    const double s2   = mc::sin2_half_theta(e * w.eps_per_ev, p * w.inv_a);
-    const double t_recoil = w.tmax_fac * e * s2;  // recoil energy [eV]
+    const double s2   = mc::sin2_half_theta(e * mc_.eps_per_ev, p * mc_.inv_a);
+    const double t_recoil = mc_.tmax_fac * e * s2;  // recoil energy [eV]
     e -= t_recoil;
 
-    // Kinchin-Pease damage: accumulate displaced atoms in shared array.
-    if (w.damage && t_recoil >= kEdSi) {
+    // Kinchin-Pease damage: accumulate displaced atoms (crystal Si only).
+    if (w.damage && mc_.crystal_si && t_recoil >= kEdSi) {
       const int ci = w.locator->locate(pos);
       if (ci >= 0) {
         const std::uint32_t ndis = (t_recoil < 2.0*kEdSi)
@@ -329,7 +385,7 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
 
     const double cth = 1.0 - 2.0*s2;
     const double sth = 2.0*std::sqrt(std::max(0.0, s2*(1.0-s2)));
-    const double psi = std::atan2(sth, cth+w.mass_ratio);
+    const double psi = std::atan2(sth, cth+mc_.mass_ratio);
     dir = deflect(dir, std::cos(psi), std::sin(psi), 2.0*M_PI*rng.u());
 
     if (e <= kEstopEv) break;
@@ -362,15 +418,20 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
 
   WalkParams w;
   w.e0_ev     = p.energy_kev * 1000.0;
-  w.flight    = std::pow(kNt, -1.0/3.0);
-  w.pmax      = w.flight / std::sqrt(M_PI);
-  w.inv_a     = 1.0 / mc::screening_length_cm(z1, kZt);
-  w.eps_per_ev = mc::reduced_energy_per_ev(z1, m1, kZt, kMt);
-  w.tmax_fac  = 4.0*m1*kMt/((m1+kMt)*(m1+kMt));
-  w.mass_ratio = m1/kMt;
-  const double kls = 3.83e-15*std::pow(z1,7.0/6.0)*kZt/
-                     (std::pow(std::pow(z1,2.0/3.0)+std::pow(kZt,2.0/3.0),1.5)*std::sqrt(m1));
-  w.els_fac   = kNt*w.flight*kls/std::sqrt(1000.0);
+
+  // Build per-material stopping constants. With no material table the domain is
+  // a single crystalline-Si target (legacy behaviour).
+  if (p.cell_material && !p.material_table.empty()) {
+    w.single_material = false;
+    w.cell_material   = p.cell_material;
+    w.mats.reserve(p.material_table.size());
+    for (const auto& t : p.material_table) w.mats.push_back(make_mat_constants(z1, m1, t));
+  } else {
+    w.single_material = true;
+    w.mats.push_back(make_mat_constants(z1, m1, target_silicon()));
+  }
+  w.default_mat = 0;
+
   w.lo=bb.lo; w.hi=bb.hi;
   w.wrap = !p.has_window;
   w.sx1=p.has_window?p.x1:bb.lo.x; w.sx2=p.has_window?p.x2:bb.hi.x;
@@ -382,16 +443,21 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   const double area = (w.sx2-w.sx1)*(w.sy2-w.sy1);
   const double weight = p.dose * area / static_cast<double>(p.ions);
 
-  // Channeling setup.
+  // Channeling setup. Crystal axes are attached to every crystalline-Si
+  // material so the ion channels only while inside silicon.
   DamageStore dmg_store;
   if (p.channeling) {
     w.channeling = true;
     w.u1_sq      = kU1*kU1;
-    w.chan_axes  = build_crystal_axes(z1, mc::screening_length_cm(z1, kZt));
+    for (auto& mc_ : w.mats)
+      if (mc_.crystal_si)
+        mc_.chan_axes = build_crystal_axes(z1, mc::screening_length_cm(z1, kZt));
     dmg_store    = DamageStore(nc, weight, mesh.cell_vol);
     w.damage     = &dmg_store;
     w.locator    = &locator;
   }
+  // Multi-material transport needs the locator even without channeling.
+  if (!w.single_material && !w.locator) w.locator = &locator;
 
   scatter_table();  // ensure table is built before spawning workers
 
