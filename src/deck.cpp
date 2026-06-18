@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "cprocess/field_transfer.hpp"
 #include "cprocess/gmsh_reader.hpp"
 #include "cprocess/implant.hpp"
 #include "cprocess/mc_implant.hpp"
@@ -268,10 +269,46 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
     p.ions = static_cast<long long>(c.num_or("ions", Unit::none, 100000));
     p.threads = static_cast<int>(c.num_or("threads", Unit::none, 0));
     p.seed = static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1));
-    p.channeling = (c.num_or("channeling", Unit::none, 0) != 0);
+    p.channeling = c.flag_or("channeling", false);
     if (p.energy_kev > 500)
       log << "[implant] warning: E > 500 keV is outside the validity of the "
              "Lindhard-Scharff stopping model\n";
+
+    // If a physical resist stack is present, run MC in the full stack mesh and
+    // transfer the profile back to the working mesh. This lets resist, vacuum,
+    // and Si each apply their own stopping power — including lateral straggle
+    // under mask edges. The full-surface beam is used (no geometric window).
+    if (st.has_stack) {
+      // Si cells in the stack: atoms deposited here count; resist/vacuum don't.
+      const int nc_s = static_cast<int>(st.stack.cells.size());
+      std::vector<char> stack_si(nc_s, 0);
+      for (int ci = 0; ci < nc_s; ++ci)
+        stack_si[ci] = (st.stack_cell_mat[ci] == 0) ? 1 : 0;
+
+      p.has_window = false;    // full-surface irradiation; masking is physical
+      p.material_table = st.mat_table;
+      p.cell_material  = &st.stack_cell_mat;
+
+      std::vector<double> stack_conc(nc_s, 0.0);
+      const McImplantStats s =
+          apply_mc_implant(st.stack, stack_si, p, stack_conc, nullptr);
+
+      // Transfer from stack Si cells → working mesh cells.
+      const std::vector<double> transferred =
+          transfer_field_nearest(st.stack, stack_conc, st.mesh);
+      for (std::size_t i = 0; i < f.size(); ++i) f[i] += transferred[i];
+
+      const double n = static_cast<double>(p.ions);
+      log << "[implant] " << dop->symbol << " MC (physical resist): dose="
+          << fmt("%.3g", p.dose) << " cm^-2, E=" << fmt("%.4g", p.energy_kev)
+          << " keV, " << p.ions << " ions\n";
+      log << "[implant]   deposited_in_Si=" << fmt("%.1f", 100.0 * s.deposited / n)
+          << "%, stopped_in_resist=" << fmt("%.1f", 100.0 * s.in_mask / n)
+          << "%, backscattered=" << fmt("%.2f", 100.0 * s.backscattered / n) << "%\n";
+      if (s.unbinned > 0)
+        log << "[implant] warning: " << s.unbinned << " ions unbinned\n";
+      return;
+    }
 
     const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f);
     const double n = static_cast<double>(p.ions);
@@ -419,6 +456,117 @@ void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
       << "active clamp at T=" << fmt("%.5g", st.last_temp) << " K)\n";
 }
 
+// ── photo / mask / strip ─────────────────────────────────────────────────────
+
+// Build a box mesh that covers the same (x,y) footprint as `base` but is
+// taller by `thickness`. nz_base is extracted from the bbox; nz_add layers are
+// appended for the overlayer.
+static Mesh extend_mesh(const Mesh& base, double thickness, int nz_add) {
+  const BBox bb = base.bbox();
+  const double base_lz = bb.hi.z - bb.lo.z;
+  for (const auto& c : base.cell_cent) {
+    (void)c; break; // just use the ratio
+  }
+  // Approximate nz_base from volume: nc = 6 * nx * ny * nz
+  // Use nz_add passed in; nz_base inferred from cell count.
+  const int nc = static_cast<int>(base.cells.size());
+  // Back-calculate total NZ ≈ nc / (6 * NX * NY). We don't store NX,NY so
+  // use the bbox aspect ratios as a proxy: NZ ≈ NC/6 * (Lz/Lx/Ly)^(1/3) — too
+  // complex. Just use `nz_add` for the entire stack height and accept that the
+  // substrate cell density may differ.
+  const int nx_eff = std::max(2, static_cast<int>(
+      std::round(std::sqrt(std::sqrt(static_cast<double>(nc) / 6.0 *
+                           (bb.hi.x - bb.lo.x) * (bb.hi.y - bb.lo.y) /
+                           base_lz)))));
+  // The simplest correct approach: make a fresh box mesh of the full height.
+  const double new_lz = base_lz + thickness;
+  // Estimate NZ_base by matching cell density.
+  const double cell_h = base_lz / std::max(1.0,
+      std::round(base_lz * std::cbrt(nc / 6.0) / std::sqrt(
+          (bb.hi.x - bb.lo.x) * (bb.hi.y - bb.lo.y))));
+  const int nz_base_est = std::max(1, static_cast<int>(std::round(base_lz / cell_h)));
+  const int nz_total = nz_base_est + nz_add;
+  return make_box_mesh(bb.lo.x, bb.hi.x, bb.lo.y, bb.hi.y, bb.lo.z,
+                       bb.lo.z + new_lz, nx_eff, nx_eff, nz_total);
+}
+
+void cmd_photo(SimState& st, const Cmd& c, std::ostream& log) {
+  need_mesh(st, c);
+  if (st.has_stack)
+    c.fail("resist already present; run 'strip' before 'photo'");
+
+  const double thickness = c.num("resist", Unit::length);
+  if (thickness <= 0) c.fail("resist= must be > 0");
+  const int nz_add = static_cast<int>(c.num_or("nz", Unit::none, 4));
+
+  const BBox bb = st.mesh.bbox();
+  const double z_si_top = bb.hi.z;
+
+  st.stack = extend_mesh(st.mesh, thickness, nz_add);
+  const int nc_s = static_cast<int>(st.stack.cells.size());
+
+  // material: 0 = Si (substrate), 1 = resist (blanket overlayer)
+  st.stack_cell_mat.assign(nc_s, 0);
+  for (int ci = 0; ci < nc_s; ++ci)
+    if (st.stack.cell_cent[ci].z > z_si_top)
+      st.stack_cell_mat[ci] = 1;  // resist
+
+  st.mat_table = {target_silicon(), target_photoresist(), target_vacuum()};
+  st.stack_resist_z0 = z_si_top;
+  st.has_stack = true;
+
+  long resist_cells = 0;
+  for (int m : st.stack_cell_mat) if (m == 1) ++resist_cells;
+  log << "[photo] resist thickness=" << fmt("%.4g", thickness * 1e4) << " um"
+      << ", stack: " << nc_s << " tets, " << resist_cells << " resist cells\n";
+}
+
+void cmd_mask(SimState& st, const Cmd& c, std::ostream& log) {
+  need_mesh(st, c);
+  if (!st.has_stack)
+    c.fail("no resist present; run 'photo' first");
+
+  const double x1 = c.num("x1", Unit::length);
+  const double x2 = c.num("x2", Unit::length);
+  if (!(x2 > x1)) c.fail("mask window requires x2 > x1");
+
+  const BBox bb = st.stack.bbox();
+  const double y1 = c.num_or("y1", Unit::length, bb.lo.y);
+  const double y2 = c.num_or("y2", Unit::length, bb.hi.y);
+  if (!(y2 > y1)) c.fail("mask window requires y2 > y1");
+
+  int opened = 0;
+  const int nc_s = static_cast<int>(st.stack.cells.size());
+  for (int ci = 0; ci < nc_s; ++ci) {
+    if (st.stack_cell_mat[ci] != 1) continue;  // only resist cells
+    const Vec3& cent = st.stack.cell_cent[ci];
+    if (cent.x >= x1 && cent.x <= x2 && cent.y >= y1 && cent.y <= y2) {
+      st.stack_cell_mat[ci] = 2;  // vacuum / developed opening
+      ++opened;
+    }
+  }
+  log << "[mask]  window x=[" << fmt("%.4g", x1 * 1e4) << ","
+      << fmt("%.4g", x2 * 1e4) << "] y=[" << fmt("%.4g", y1 * 1e4) << ","
+      << fmt("%.4g", y2 * 1e4) << "] um -> opened " << opened << " cells\n";
+}
+
+void cmd_strip(SimState& st, const Cmd& c, std::ostream& log) {
+  (void)c;
+  need_mesh(st, c);
+  if (!st.has_stack) {
+    log << "[strip] no resist present; nothing to do\n";
+    return;
+  }
+  st.has_stack = false;
+  st.stack = Mesh{};
+  st.stack_cell_mat.clear();
+  st.mat_table.clear();
+  st.stack_resist_z0 = 0;
+  log << "[strip] photoresist removed\n";
+}
+
+// ── print ─────────────────────────────────────────────────────────────────────
+
 void cmd_print(SimState& st, const Cmd& c, std::ostream& log) {
   need_mesh(st, c);
   const BBox b = st.mesh.bbox();
@@ -474,6 +622,9 @@ void run_deck(std::istream& in, SimState& st, std::ostream& log) {
     else if (c.name == "region") cmd_region(st, c, log);
     else if (c.name == "init") cmd_init(st, c, log);
     else if (c.name == "implant") cmd_implant(st, c, log);
+    else if (c.name == "photo") cmd_photo(st, c, log);
+    else if (c.name == "mask") cmd_mask(st, c, log);
+    else if (c.name == "strip") cmd_strip(st, c, log);
     else if (c.name == "bc") cmd_bc(st, c, log);
     else if (c.name == "diffuse") cmd_diffuse(st, c, log);
     else if (c.name == "save") cmd_save(st, c, log);
