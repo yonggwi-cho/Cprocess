@@ -1,0 +1,73 @@
+#pragma once
+#include <iosfwd>
+#include <string>
+
+#include "deck.hpp"
+#include "diffusion.hpp"
+#include "implant.hpp"
+#include "mc_implant.hpp"
+
+namespace cp {
+
+// Native process operations on a SimState. These contain the canonical logic
+// for every process step; both the text deck (run_deck) and the Python
+// bindings drive them, so the two front-ends always agree. All lengths are in
+// cm, energies in keV, times in seconds, temperatures in K — the same
+// conventions as the rest of the C++ core. Pass log=nullptr to silence output.
+namespace proc {
+
+// Silicon cells (region material "silicon"/"si", or untagged) get mask=1.
+std::vector<char> silicon_mask(const SimState& st);
+
+// Resolve a region by name or numeric tag; returns the tag (throws on error).
+int resolve_region(const SimState& st, const std::string& name_or_tag);
+
+void mesh_box(SimState& st, double x0, double x1, double y0, double y1,
+              double z0, double z1, int nx, int ny, int nz,
+              std::ostream* log = nullptr);
+void mesh_gmsh(SimState& st, const std::string& file, double scale,
+               std::ostream* log = nullptr);
+
+// Set material on a region tag, or on all regions when tag < 0.
+void set_region(SimState& st, const std::string& material, int tag = -1,
+                std::ostream* log = nullptr);
+
+// Initialize a uniform background concentration (silicon cells only).
+void init(SimState& st, const std::string& species, double conc,
+          int region = -1, std::ostream* log = nullptr);
+
+// Analytic Gaussian implant. If energy_kev > 0, rp/drp are looked up from the
+// dopant range table; otherwise rp/drp must be given. Adds to the field.
+double implant_gauss(SimState& st, const std::string& species, double dose,
+                     double energy_kev, double rp, double drp, double drl,
+                     bool has_window, double x1, double x2, double y1, double y2,
+                     std::ostream* log = nullptr);
+
+// Monte Carlo (BCA) implant. When a photoresist stack is present (after
+// photo()), transport runs through the full physical stack and the profile is
+// transferred back onto the working mesh.
+McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
+                          double energy_kev, long long ions, double tilt_deg,
+                          double rotation_deg, unsigned long long seed,
+                          int threads, bool channeling, bool has_window,
+                          double x1, double x2, double y1, double y2,
+                          std::ostream* log = nullptr);
+
+// Photoresist lithography.
+void photo(SimState& st, double thickness, int nz_add = 4,
+           std::ostream* log = nullptr);
+void mask(SimState& st, double x1, double x2, double y1, double y2,
+          std::ostream* log = nullptr);
+void strip(SimState& st, std::ostream* log = nullptr);
+
+// Dirichlet boundary conditions for diffusion.
+void add_bc(SimState& st, const std::string& species, int patch, double conc,
+            std::ostream* log = nullptr);
+void clear_bc(SimState& st, std::ostream* log = nullptr);
+
+void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log = nullptr);
+
+void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
+
+}  // namespace proc
+}  // namespace cp

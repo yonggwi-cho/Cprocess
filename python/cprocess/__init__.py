@@ -2,45 +2,47 @@
 cprocess — 3-D semiconductor process simulator
 ===============================================
 
-High-level interface::
+Native Python interface (recommended)::
 
     import cprocess as cp
-    import numpy as np
 
-    # Run a full process deck (SUPREM-style)
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=0.5, nx=8, ny=8, nz=4)   # micrometres
+    sim.region("silicon")
+    sim.init("B", 1e15)
+
+    sim.implant("B", dose=5e12, energy=40, mc=True)    # channel-stop
+
+    sim.photo(resist=0.4)                              # physical resist
+    sim.mask(x1=0.0,  x2=0.35)                          # open source
+    sim.mask(x1=0.65, x2=1.0)                           # open drain
+    sim.implant("P", dose=5e15, energy=30, mc=True)
+    sim.strip()
+
+    sim.diffuse(time=30, temp=1000)                    # min, Celsius
+    sim.save("nmos.vtu")
+
+    P   = sim.field("P")          # np.ndarray [cm^-3]
+    xyz = sim.cell_centroids      # np.ndarray [n_cells, 3], micrometres
+
+Units: micrometres, keV, minutes, Celsius. Methods chain (each returns the
+Simulation), except implant() which returns the implant result.
+
+Text deck (legacy, still supported)::
+
     st = cp.SimState()
-    log = cp.run_deck('''
+    cp.run_deck('''
         mesh box xmax=0.4um ymax=0.4um zmax=0.8um nx=8 ny=8 nz=40
         init species=P conc=1e15
         implant species=B energy=50keV dose=1e13 method=mc ions=50000
         diffuse time=10min temp=1000C
     ''', st)
-    print(log)
 
-    B   = st.get_field('B')    # np.ndarray, shape (n_cells,), [cm^-3]
-    xyz = st.mesh.cell_cent    # shape (n_cells, 3), [cm]
-    vol = st.mesh.cell_vol     # shape (n_cells,), [cm^3]
-
-Low-level interface::
-
-    mesh = cp.make_box_mesh(0, 0.4*cp.um, 0, 0.4*cp.um, 0, 0.8*cp.um, 8, 8, 40)
-    mask = np.ones(mesh.n_cells, dtype=np.uint8)
-
-    p = cp.McImplantParams()
-    p.set_dopant('B')
-    p.dose = 1e13
-    p.energy_kev = 50
-    p.ions = 50000
-    stats, conc, damage = cp.apply_mc_implant(mesh, mask, p)
-    print(stats)            # McImplantStats(deposited=..., Rp=...nm, dRp=...nm)
-
-    opts = cp.DiffuseOpts()
-    opts.temp = 1273.15     # 1000 °C in K
-    opts.time = 600         # 10 min
-
-    st = cp.SimState()
-    # (attach mesh and fields manually or via run_deck)
+Low-level bindings (make_box_mesh, apply_mc_implant, diffuse, ...) remain
+available for custom workflows.
 """
+
+from .simulation import Simulation, ImplantResult, UM, NM, MIN  # noqa: F401
 
 from ._cprocess import (  # noqa: F401
     # Core objects

@@ -2,19 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <istream>
+#include <map>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
-#include "cprocess/field_transfer.hpp"
-#include "cprocess/gmsh_reader.hpp"
-#include "cprocess/implant.hpp"
-#include "cprocess/mc_implant.hpp"
-#include "cprocess/vtk_writer.hpp"
+#include "cprocess/process.hpp"
 
 namespace cp {
 
@@ -110,281 +107,115 @@ struct Cmd {
   }
 };
 
-bool is_silicon(const std::string& mat) {
-  const std::string m = lower(mat);
-  return m == "silicon" || m == "si";
-}
-
-std::vector<char> silicon_mask(const SimState& st) {
-  std::vector<char> mask(st.mesh.cells.size(), 1);
-  for (std::size_t i = 0; i < st.mesh.cells.size(); ++i) {
-    auto it = st.region_material.find(st.mesh.cell_region[i]);
-    mask[i] = (it == st.region_material.end()) || is_silicon(it->second);
-  }
-  return mask;
-}
-
-int region_by_name_or_tag(const SimState& st, const Cmd& c, const std::string& v) {
-  char* end = nullptr;
-  const long tag = std::strtol(v.c_str(), &end, 10);
-  if (end != v.c_str() && *end == '\0') return static_cast<int>(tag);
-  for (const auto& [t, n] : st.mesh.region_names)
-    if (lower(n) == lower(v)) return t;
-  c.fail("unknown region '" + v + "'");
-}
-
-const Dopant* dopant_arg(const Cmd& c) {
-  const Dopant* d = find_dopant(c.str("species"));
-  if (!d) c.fail("unknown species '" + c.str("species") + "' (B, P, As, Sb)");
-  return d;
-}
-
-void need_mesh(const SimState& st, const Cmd& c) {
-  if (!st.has_mesh) c.fail("no mesh defined yet (use 'mesh box' or 'mesh gmsh')");
-}
-
-std::string fmt(const char* f, double v) {
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), f, v);
-  return buf;
+// A mask window must be given as all of x1,x2,y1,y2 — or none.
+bool parse_window(const Cmd& c, double& x1, double& x2, double& y1, double& y2) {
+  const int nw = c.has("x1") + c.has("x2") + c.has("y1") + c.has("y2");
+  if (nw == 0) return false;
+  if (nw != 4) c.fail("mask window needs all of x1=, x2=, y1=, y2=");
+  x1 = c.num("x1", Unit::length);
+  x2 = c.num("x2", Unit::length);
+  y1 = c.num("y1", Unit::length);
+  y2 = c.num("y2", Unit::length);
+  if (!(x2 > x1) || !(y2 > y1)) c.fail("window must have x2>x1, y2>y1");
+  return true;
 }
 
 void cmd_mesh(SimState& st, const Cmd& c, std::ostream& log) {
   if (c.bare.size() < 2) c.fail("expected 'mesh box ...' or 'mesh gmsh ...'");
   const std::string sub = lower(c.bare[1]);
   if (sub == "box") {
-    st.mesh = make_box_mesh(
+    proc::mesh_box(st,
         c.num_or("xmin", Unit::length, 0), c.num("xmax", Unit::length),
         c.num_or("ymin", Unit::length, 0), c.num("ymax", Unit::length),
         c.num_or("zmin", Unit::length, 0), c.num("zmax", Unit::length),
         static_cast<int>(c.num("nx", Unit::none)),
         static_cast<int>(c.num("ny", Unit::none)),
-        static_cast<int>(c.num("nz", Unit::none)));
+        static_cast<int>(c.num("nz", Unit::none)), &log);
   } else if (sub == "gmsh") {
-    st.mesh = read_gmsh(c.str("file"), c.num_or("scale", Unit::length, 1.0), &log);
+    proc::mesh_gmsh(st, c.str("file"), c.num_or("scale", Unit::length, 1.0), &log);
   } else {
     c.fail("unknown mesh type '" + sub + "'");
   }
-  st.has_mesh = true;
-  st.fields.clear();
-  st.bcs.clear();
-  st.region_material.clear();
-  for (int tag : st.mesh.region_tags()) st.region_material[tag] = "silicon";
-
-  const BBox b = st.mesh.bbox();
-  log << "[mesh] " << st.mesh.cells.size() << " tets, " << st.mesh.nodes.size()
-      << " nodes, extent " << fmt("%.3g", (b.hi.x - b.lo.x) * 1e4) << " x "
-      << fmt("%.3g", (b.hi.y - b.lo.y) * 1e4) << " x "
-      << fmt("%.3g", (b.hi.z - b.lo.z) * 1e4) << " um, min orthogonality "
-      << fmt("%.3f", st.mesh.min_orthogonality()) << "\n[mesh] patches:";
-  for (const auto& p : st.mesh.patch_names) log << " " << p;
-  log << "\n[mesh] regions:";
-  for (int tag : st.mesh.region_tags()) {
-    log << " " << tag;
-    auto it = st.mesh.region_names.find(tag);
-    if (it != st.mesh.region_names.end() && !it->second.empty())
-      log << "(" << it->second << ")";
-  }
-  log << "\n";
 }
 
 void cmd_region(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  const std::string mat = lower(c.str("material"));
-  static const char* known[] = {"silicon", "si", "oxide", "nitride", "poly",
-                                "polysilicon", "gas"};
-  if (std::none_of(std::begin(known), std::end(known),
-                   [&](const char* k) { return mat == k; }))
-    c.fail("unknown material '" + mat + "'");
-  std::vector<int> tags;
+  const std::string mat = c.str("material");
   if (!c.bare.empty() && c.bare.size() >= 2 && lower(c.bare[1]) == "all") {
-    tags = st.mesh.region_tags();
+    proc::set_region(st, mat, -1, &log);
   } else if (c.has("tag")) {
-    tags.push_back(static_cast<int>(c.num("tag", Unit::none)));
+    proc::set_region(st, mat, static_cast<int>(c.num("tag", Unit::none)), &log);
   } else if (c.has("name")) {
-    tags.push_back(region_by_name_or_tag(st, c, c.str("name")));
+    proc::set_region(st, mat, proc::resolve_region(st, c.str("name")), &log);
   } else {
     c.fail("expected tag=, name= or 'region all'");
   }
-  for (int t : tags) st.region_material[t] = mat;
-  log << "[region]";
-  for (int t : tags) log << " " << t;
-  log << " -> " << mat << "\n";
 }
 
 void cmd_init(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  const Dopant* d = dopant_arg(c);
-  const double conc = c.num("conc", Unit::none);
-  if (conc < 0) c.fail("conc must be >= 0");
-  int region = -1;
-  if (c.has("region")) region = region_by_name_or_tag(st, c, c.str("region"));
-  auto& f = st.fields[d->symbol];
-  f.resize(st.mesh.cells.size(), 0.0);
-  const std::vector<char> mask = silicon_mask(st);
-  std::size_t nset = 0;
-  for (std::size_t i = 0; i < f.size(); ++i) {
-    if (!mask[i]) continue;
-    if (region >= 0 && st.mesh.cell_region[i] != region) continue;
-    f[i] = conc;
-    ++nset;
-  }
-  log << "[init] " << d->symbol << " = " << fmt("%.3g", conc) << " cm^-3 in "
-      << nset << " cells\n";
+  const int region = c.has("region")
+      ? proc::resolve_region(st, c.str("region")) : -1;
+  proc::init(st, c.str("species"), c.num("conc", Unit::none), region, &log);
 }
 
 void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  const Dopant* dop = dopant_arg(c);
+  const std::string species = c.str("species");
   const double dose = c.num("dose", Unit::none);
-
-  bool has_window = false;
-  double wx1 = 0, wx2 = 0, wy1 = 0, wy2 = 0;
-  const int nw = c.has("x1") + c.has("x2") + c.has("y1") + c.has("y2");
-  if (nw == 4) {
-    has_window = true;
-    wx1 = c.num("x1", Unit::length);
-    wx2 = c.num("x2", Unit::length);
-    wy1 = c.num("y1", Unit::length);
-    wy2 = c.num("y2", Unit::length);
-    if (!(wx2 > wx1) || !(wy2 > wy1)) c.fail("window must have x2>x1, y2>y1");
-  } else if (nw != 0) {
-    c.fail("mask window needs all of x1=, x2=, y1=, y2=");
-  }
-
-  auto& f = st.fields[dop->symbol];
-  f.resize(st.mesh.cells.size(), 0.0);
+  double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  const bool has_window = parse_window(c, x1, x2, y1, y2);
   const std::string method =
       c.has("method") ? lower(c.kv.at("method")) : std::string("gauss");
 
   if (method == "mc" || method == "montecarlo") {
-    McImplantParams p;
-    p.dopant = dop;
-    p.dose = dose;
-    p.energy_kev = c.num("energy", Unit::energy);
-    p.tilt_deg = c.num_or("tilt", Unit::none, 0);
-    p.rotation_deg = c.num_or("rotation", Unit::none, 0);
-    p.has_window = has_window;
-    p.x1 = wx1; p.x2 = wx2; p.y1 = wy1; p.y2 = wy2;
-    p.ions = static_cast<long long>(c.num_or("ions", Unit::none, 100000));
-    p.threads = static_cast<int>(c.num_or("threads", Unit::none, 0));
-    p.seed = static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1));
-    p.channeling = c.flag_or("channeling", false);
-    if (p.energy_kev > 500)
-      log << "[implant] warning: E > 500 keV is outside the validity of the "
-             "Lindhard-Scharff stopping model\n";
-
-    // If a physical resist stack is present, run MC in the full stack mesh and
-    // transfer the profile back to the working mesh. This lets resist, vacuum,
-    // and Si each apply their own stopping power — including lateral straggle
-    // under mask edges. The full-surface beam is used (no geometric window).
-    if (st.has_stack) {
-      // Si cells in the stack: atoms deposited here count; resist/vacuum don't.
-      const int nc_s = static_cast<int>(st.stack.cells.size());
-      std::vector<char> stack_si(nc_s, 0);
-      for (int ci = 0; ci < nc_s; ++ci)
-        stack_si[ci] = (st.stack_cell_mat[ci] == 0) ? 1 : 0;
-
-      p.has_window = false;    // full-surface irradiation; masking is physical
-      p.material_table = st.mat_table;
-      p.cell_material  = &st.stack_cell_mat;
-
-      std::vector<double> stack_conc(nc_s, 0.0);
-      const McImplantStats s =
-          apply_mc_implant(st.stack, stack_si, p, stack_conc, nullptr);
-
-      // Transfer from stack Si cells → working mesh cells.
-      const std::vector<double> transferred =
-          transfer_field_nearest(st.stack, stack_conc, st.mesh);
-      for (std::size_t i = 0; i < f.size(); ++i) f[i] += transferred[i];
-
-      const double n = static_cast<double>(p.ions);
-      log << "[implant] " << dop->symbol << " MC (physical resist): dose="
-          << fmt("%.3g", p.dose) << " cm^-2, E=" << fmt("%.4g", p.energy_kev)
-          << " keV, " << p.ions << " ions\n";
-      log << "[implant]   deposited_in_Si=" << fmt("%.1f", 100.0 * s.deposited / n)
-          << "%, stopped_in_resist=" << fmt("%.1f", 100.0 * s.in_mask / n)
-          << "%, backscattered=" << fmt("%.2f", 100.0 * s.backscattered / n) << "%\n";
-      if (s.unbinned > 0)
-        log << "[implant] warning: " << s.unbinned << " ions unbinned\n";
-      return;
-    }
-
-    const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f);
-    const double n = static_cast<double>(p.ions);
-    log << "[implant] " << dop->symbol << " MC: dose=" << fmt("%.3g", p.dose)
-        << " cm^-2, E=" << fmt("%.4g", p.energy_kev) << " keV, " << p.ions
-        << " ions, tilt=" << fmt("%.3g", p.tilt_deg) << " deg\n";
-    log << "[implant]   deposited " << fmt("%.1f", 100.0 * s.deposited / n)
-        << "% (Rp=" << fmt("%.4g", s.rp * 1e4) << " um, dRp="
-        << fmt("%.4g", s.drp * 1e4) << " um), backscattered "
-        << fmt("%.2f", 100.0 * s.backscattered / n) << "%, transmitted "
-        << fmt("%.2f", 100.0 * s.transmitted / n) << "%, out-of-domain "
-        << fmt("%.2f", 100.0 * s.out_of_domain / n) << "%, in-mask "
-        << fmt("%.2f", 100.0 * s.in_mask / n) << "%\n";
-    if (s.unbinned > 0)
-      log << "[implant] warning: " << s.unbinned
-          << " ions rested in no cell (mesh holes?)\n";
+    proc::implant_mc(st, species, dose, c.num("energy", Unit::energy),
+        static_cast<long long>(c.num_or("ions", Unit::none, 100000)),
+        c.num_or("tilt", Unit::none, 0), c.num_or("rotation", Unit::none, 0),
+        static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1)),
+        static_cast<int>(c.num_or("threads", Unit::none, 0)),
+        c.flag_or("channeling", false), has_window, x1, x2, y1, y2, &log);
     return;
   }
   if (method != "gauss" && method != "gaussian" && method != "analytic")
     c.fail("unknown method '" + method + "' (gauss or mc)");
 
-  ImplantParams p;
-  p.dopant = dop;
-  p.dose = dose;
+  double rp = 0, drp = 0, energy = 0;
   if (c.has("rp") || c.has("drp")) {
-    p.rp = c.num("rp", Unit::length);
-    p.drp = c.num("drp", Unit::length);
+    rp = c.num("rp", Unit::length);
+    drp = c.num("drp", Unit::length);
   } else {
-    const double e = c.num("energy", Unit::energy);
-    if (!implant_range(*p.dopant, e, p.rp, p.drp))
-      c.fail("no range table for species; give rp= and drp=");
-    const auto& tab = p.dopant->range;
-    if (e < tab.front()[0] || e > tab.back()[0])
-      log << "[implant] warning: energy outside range table ("
-          << tab.front()[0] << "-" << tab.back()[0] << " keV), clamped\n";
+    energy = c.num("energy", Unit::energy);
   }
-  p.drl = c.num_or("drl", Unit::length, 0);
-  p.has_window = has_window;
-  p.x1 = wx1; p.x2 = wx2; p.y1 = wy1; p.y2 = wy2;
+  proc::implant_gauss(st, species, dose, energy, rp, drp,
+                      c.num_or("drl", Unit::length, 0), has_window, x1, x2, y1, y2,
+                      &log);
+}
 
-  const double atoms = apply_implant(st.mesh, silicon_mask(st), p, f);
-  const BBox b = st.mesh.bbox();
-  const double area = p.has_window ? (p.x2 - p.x1) * (p.y2 - p.y1)
-                                   : (b.hi.x - b.lo.x) * (b.hi.y - b.lo.y);
-  log << "[implant] " << p.dopant->symbol << " dose=" << fmt("%.3g", p.dose)
-      << " cm^-2, Rp=" << fmt("%.4g", p.rp * 1e4)
-      << " um, dRp=" << fmt("%.4g", p.drp * 1e4) << " um";
-  if (p.has_window)
-    log << ", window [" << fmt("%.3g", p.x1 * 1e4) << ","
-        << fmt("%.3g", p.x2 * 1e4) << "]x[" << fmt("%.3g", p.y1 * 1e4) << ","
-        << fmt("%.3g", p.y2 * 1e4) << "] um";
-  log << " -> integrated " << fmt("%.4g", atoms / area) << " cm^-2\n";
+void cmd_photo(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::photo(st, c.num("resist", Unit::length),
+              static_cast<int>(c.num_or("nz", Unit::none, 4)), &log);
+}
+
+void cmd_mask(SimState& st, const Cmd& c, std::ostream& log) {
+  const BBox bb = st.has_stack ? st.stack.bbox() : st.mesh.bbox();
+  proc::mask(st, c.num("x1", Unit::length), c.num("x2", Unit::length),
+             c.num_or("y1", Unit::length, bb.lo.y),
+             c.num_or("y2", Unit::length, bb.hi.y), &log);
+}
+
+void cmd_strip(SimState& st, const Cmd&, std::ostream& log) {
+  proc::strip(st, &log);
 }
 
 void cmd_bc(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
   if (c.bare.size() >= 2 && lower(c.bare[1]) == "clear") {
-    st.bcs.clear();
-    log << "[bc] cleared\n";
+    proc::clear_bc(st, &log);
     return;
   }
-  DirichletBC bc;
-  const Dopant* d = dopant_arg(c);
-  bc.species = d->symbol;
-  bc.patch = st.mesh.find_patch(c.str("patch"));
-  if (bc.patch < 0) c.fail("unknown patch '" + c.str("patch") + "'");
-  bc.conc = c.num("conc", Unit::none);
-  if (bc.conc < 0) c.fail("conc must be >= 0");
-  st.bcs.push_back(bc);
-  st.fields[d->symbol].resize(st.mesh.cells.size(), 0.0);
-  log << "[bc] " << bc.species << " = " << fmt("%.3g", bc.conc) << " cm^-3 on '"
-      << c.str("patch") << "'\n";
+  const int patch = st.mesh.find_patch(c.str("patch"));
+  if (patch < 0) c.fail("unknown patch '" + c.str("patch") + "'");
+  proc::add_bc(st, c.str("species"), patch, c.num("conc", Unit::none), &log);
 }
 
 void cmd_diffuse(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
   DiffuseOpts o;
   o.time = c.num("time", Unit::time);
   o.temp = c.num("temp", Unit::temp);
@@ -392,202 +223,29 @@ void cmd_diffuse(SimState& st, const Cmd& c, std::ostream& log) {
   o.field_enh = c.flag_or("fieldenh", true);
   o.nonortho = c.flag_or("nonortho", true);
   if (o.time <= 0) c.fail("time must be > 0");
-  if (o.temp < 600 || o.temp > 1800)
-    log << "[diffuse] warning: T=" << o.temp
-        << " K outside the usual 600-1800 K model range\n";
-
-  std::vector<SpeciesField> fields;
-  for (auto& [sym, conc] : st.fields) {
-    const Dopant* d = find_dopant(sym);
-    if (d) fields.push_back({d, &conc});
-  }
-  if (fields.empty()) {
-    log << "[diffuse] no dopants present, nothing to do\n";
-    return;
-  }
-  log << "[diffuse] T=" << fmt("%.5g", o.temp) << " K, time=" << fmt("%.5g", o.time)
-      << " s, dt=" << fmt("%.4g", o.dt > 0 ? std::min(o.dt, o.time) : o.time / 50)
-      << " s, ni=" << fmt("%.3g", ni_si(o.temp)) << " cm^-3, species:";
-  for (const auto& f : fields) log << " " << f.dopant->symbol;
-  log << "\n";
-
-  DiffusionSolver solver(st.mesh, silicon_mask(st), &log);
-  solver.run(fields, st.bcs, o);
-  st.last_temp = o.temp;
+  proc::diffuse(st, o, &log);
 }
 
 void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  const std::string path = c.has("file") ? c.str("file") : "out.vtu";
-  const std::size_t nc = st.mesh.cells.size();
-
-  std::vector<std::vector<double>> extra;
-  std::vector<std::pair<std::string, const std::vector<double>*>> scalars;
-  for (const auto& [sym, conc] : st.fields) scalars.emplace_back(sym, &conc);
-
-  // Electrically active concentrations: clamped at the solid solubility of
-  // the last anneal temperature.
-  std::vector<double> net(nc, 0.0);
-  extra.reserve(st.fields.size());
-  for (const auto& [sym, conc] : st.fields) {
-    const Dopant* d = find_dopant(sym);
-    if (!d) continue;
-    const double css = solid_solubility(*d, st.last_temp);
-    extra.emplace_back(nc, 0.0);
-    auto& act = extra.back();
-    for (std::size_t i = 0; i < nc; ++i) {
-      act[i] = (css > 0) ? std::min(conc[i], css) : conc[i];
-      net[i] += (d->type == DopType::donor) ? act[i] : -act[i];
-    }
-  }
-  std::size_t k = 0;
-  for (const auto& [sym, conc] : st.fields) {
-    (void)conc;
-    scalars.emplace_back(sym + "_active", &extra[k++]);
-  }
-  scalars.emplace_back("NetDoping", &net);
-
-  std::vector<int> region(st.mesh.cell_region.begin(), st.mesh.cell_region.end());
-  std::vector<std::pair<std::string, const std::vector<int>*>> ints = {
-      {"Region", &region}};
-
-  write_vtu(path, st.mesh, scalars, ints);
-  log << "[save] wrote " << path << " (" << scalars.size() << " scalar fields, "
-      << "active clamp at T=" << fmt("%.5g", st.last_temp) << " K)\n";
+  proc::save(st, c.has("file") ? c.str("file") : "out.vtu", &log);
 }
-
-// ── photo / mask / strip ─────────────────────────────────────────────────────
-
-// Build a box mesh that covers the same (x,y) footprint as `base` but is
-// taller by `thickness`. nz_base is extracted from the bbox; nz_add layers are
-// appended for the overlayer.
-static Mesh extend_mesh(const Mesh& base, double thickness, int nz_add) {
-  const BBox bb = base.bbox();
-  const double base_lz = bb.hi.z - bb.lo.z;
-  for (const auto& c : base.cell_cent) {
-    (void)c; break; // just use the ratio
-  }
-  // Approximate nz_base from volume: nc = 6 * nx * ny * nz
-  // Use nz_add passed in; nz_base inferred from cell count.
-  const int nc = static_cast<int>(base.cells.size());
-  // Back-calculate total NZ ≈ nc / (6 * NX * NY). We don't store NX,NY so
-  // use the bbox aspect ratios as a proxy: NZ ≈ NC/6 * (Lz/Lx/Ly)^(1/3) — too
-  // complex. Just use `nz_add` for the entire stack height and accept that the
-  // substrate cell density may differ.
-  const int nx_eff = std::max(2, static_cast<int>(
-      std::round(std::sqrt(std::sqrt(static_cast<double>(nc) / 6.0 *
-                           (bb.hi.x - bb.lo.x) * (bb.hi.y - bb.lo.y) /
-                           base_lz)))));
-  // The simplest correct approach: make a fresh box mesh of the full height.
-  const double new_lz = base_lz + thickness;
-  // Estimate NZ_base by matching cell density.
-  const double cell_h = base_lz / std::max(1.0,
-      std::round(base_lz * std::cbrt(nc / 6.0) / std::sqrt(
-          (bb.hi.x - bb.lo.x) * (bb.hi.y - bb.lo.y))));
-  const int nz_base_est = std::max(1, static_cast<int>(std::round(base_lz / cell_h)));
-  const int nz_total = nz_base_est + nz_add;
-  return make_box_mesh(bb.lo.x, bb.hi.x, bb.lo.y, bb.hi.y, bb.lo.z,
-                       bb.lo.z + new_lz, nx_eff, nx_eff, nz_total);
-}
-
-void cmd_photo(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  if (st.has_stack)
-    c.fail("resist already present; run 'strip' before 'photo'");
-
-  const double thickness = c.num("resist", Unit::length);
-  if (thickness <= 0) c.fail("resist= must be > 0");
-  const int nz_add = static_cast<int>(c.num_or("nz", Unit::none, 4));
-
-  const BBox bb = st.mesh.bbox();
-  const double z_si_top = bb.hi.z;
-
-  st.stack = extend_mesh(st.mesh, thickness, nz_add);
-  const int nc_s = static_cast<int>(st.stack.cells.size());
-
-  // material: 0 = Si (substrate), 1 = resist (blanket overlayer)
-  st.stack_cell_mat.assign(nc_s, 0);
-  for (int ci = 0; ci < nc_s; ++ci)
-    if (st.stack.cell_cent[ci].z > z_si_top)
-      st.stack_cell_mat[ci] = 1;  // resist
-
-  st.mat_table = {target_silicon(), target_photoresist(), target_vacuum()};
-  st.stack_resist_z0 = z_si_top;
-  st.has_stack = true;
-
-  long resist_cells = 0;
-  for (int m : st.stack_cell_mat) if (m == 1) ++resist_cells;
-  log << "[photo] resist thickness=" << fmt("%.4g", thickness * 1e4) << " um"
-      << ", stack: " << nc_s << " tets, " << resist_cells << " resist cells\n";
-}
-
-void cmd_mask(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
-  if (!st.has_stack)
-    c.fail("no resist present; run 'photo' first");
-
-  const double x1 = c.num("x1", Unit::length);
-  const double x2 = c.num("x2", Unit::length);
-  if (!(x2 > x1)) c.fail("mask window requires x2 > x1");
-
-  const BBox bb = st.stack.bbox();
-  const double y1 = c.num_or("y1", Unit::length, bb.lo.y);
-  const double y2 = c.num_or("y2", Unit::length, bb.hi.y);
-  if (!(y2 > y1)) c.fail("mask window requires y2 > y1");
-
-  int opened = 0;
-  const int nc_s = static_cast<int>(st.stack.cells.size());
-  for (int ci = 0; ci < nc_s; ++ci) {
-    if (st.stack_cell_mat[ci] != 1) continue;  // only resist cells
-    const Vec3& cent = st.stack.cell_cent[ci];
-    if (cent.x >= x1 && cent.x <= x2 && cent.y >= y1 && cent.y <= y2) {
-      st.stack_cell_mat[ci] = 2;  // vacuum / developed opening
-      ++opened;
-    }
-  }
-  log << "[mask]  window x=[" << fmt("%.4g", x1 * 1e4) << ","
-      << fmt("%.4g", x2 * 1e4) << "] y=[" << fmt("%.4g", y1 * 1e4) << ","
-      << fmt("%.4g", y2 * 1e4) << "] um -> opened " << opened << " cells\n";
-}
-
-void cmd_strip(SimState& st, const Cmd& c, std::ostream& log) {
-  (void)c;
-  need_mesh(st, c);
-  if (!st.has_stack) {
-    log << "[strip] no resist present; nothing to do\n";
-    return;
-  }
-  st.has_stack = false;
-  st.stack = Mesh{};
-  st.stack_cell_mat.clear();
-  st.mat_table.clear();
-  st.stack_resist_z0 = 0;
-  log << "[strip] photoresist removed\n";
-}
-
-// ── print ─────────────────────────────────────────────────────────────────────
 
 void cmd_print(SimState& st, const Cmd& c, std::ostream& log) {
-  need_mesh(st, c);
+  if (!st.has_mesh) c.fail("no mesh defined yet");
   const BBox b = st.mesh.bbox();
-  log << "[print] mesh: " << st.mesh.cells.size() << " tets, volume "
-      << fmt("%.6g", st.mesh.total_volume()) << " cm^3\n";
+  log << "[print] mesh: " << st.mesh.cells.size() << " tets\n";
   for (const auto& [sym, conc] : st.fields) {
     double mass = 0, peak = 0;
-    Vec3 ploc{};
     for (std::size_t i = 0; i < conc.size(); ++i) {
       mass += conc[i] * st.mesh.cell_vol[i];
-      if (conc[i] > peak) {
-        peak = conc[i];
-        ploc = st.mesh.cell_cent[i];
-      }
+      if (conc[i] > peak) peak = conc[i];
     }
     const double area = (b.hi.x - b.lo.x) * (b.hi.y - b.lo.y);
-    log << "[print] " << sym << ": integral=" << fmt("%.4g", mass)
-        << " atoms (" << fmt("%.4g", mass / area) << " cm^-2 avg), peak="
-        << fmt("%.4g", peak) << " cm^-3 at (" << fmt("%.3g", ploc.x * 1e4)
-        << ", " << fmt("%.3g", ploc.y * 1e4) << ", " << fmt("%.3g", ploc.z * 1e4)
-        << ") um\n";
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+        "[print] %s: integral=%.4g atoms (%.4g cm^-2 avg), peak=%.4g cm^-3\n",
+        sym.c_str(), mass, mass / area, peak);
+    log << buf;
   }
 }
 

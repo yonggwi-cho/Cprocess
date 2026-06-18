@@ -12,6 +12,7 @@
 #include "cprocess/materials.hpp"
 #include "cprocess/mc_implant.hpp"
 #include "cprocess/mesh.hpp"
+#include "cprocess/process.hpp"
 #include "cprocess/vtk_writer.hpp"
 
 namespace py = pybind11;
@@ -352,6 +353,145 @@ PYBIND11_MODULE(_cprocess, m) {
       py::arg("path"), py::arg("mesh"),
       py::arg("field_names"), py::arg("field_arrays"),
       "Save arbitrary numpy fields to a VTK .vtu file.");
+
+  // -----------------------------------------------------------------------
+  // Native process API (proc::*) — drives the same logic as the text deck.
+  // All lengths cm, energy keV, time s, temperature K. A captured log string
+  // is returned where useful.
+  // -----------------------------------------------------------------------
+  m.def("proc_mesh_box",
+      [](SimState& st, double x0, double x1, double y0, double y1,
+         double z0, double z1, int nx, int ny, int nz) {
+        std::ostringstream log;
+        proc::mesh_box(st, x0, x1, y0, y1, z0, z1, nx, ny, nz, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("x0"), py::arg("x1"), py::arg("y0"),
+      py::arg("y1"), py::arg("z0"), py::arg("z1"),
+      py::arg("nx"), py::arg("ny"), py::arg("nz"));
+
+  m.def("proc_mesh_gmsh",
+      [](SimState& st, const std::string& file, double scale) {
+        std::ostringstream log;
+        proc::mesh_gmsh(st, file, scale, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("file"), py::arg("scale") = 1.0);
+
+  m.def("proc_set_region",
+      [](SimState& st, const std::string& material, int tag) {
+        std::ostringstream log;
+        proc::set_region(st, material, tag, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("material"), py::arg("tag") = -1);
+
+  m.def("proc_resolve_region",
+      [](const SimState& st, const std::string& v) {
+        return proc::resolve_region(st, v);
+      },
+      py::arg("state"), py::arg("name_or_tag"));
+
+  m.def("proc_init",
+      [](SimState& st, const std::string& species, double conc, int region) {
+        std::ostringstream log;
+        proc::init(st, species, conc, region, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("species"), py::arg("conc"),
+      py::arg("region") = -1);
+
+  m.def("proc_implant_gauss",
+      [](SimState& st, const std::string& species, double dose,
+         double energy_kev, double rp, double drp, double drl,
+         bool has_window, double x1, double x2, double y1, double y2) {
+        std::ostringstream log;
+        const double atoms = proc::implant_gauss(st, species, dose, energy_kev,
+            rp, drp, drl, has_window, x1, x2, y1, y2, &log);
+        return py::make_tuple(atoms, log.str());
+      },
+      py::arg("state"), py::arg("species"), py::arg("dose"),
+      py::arg("energy_kev") = 0.0, py::arg("rp") = 0.0, py::arg("drp") = 0.0,
+      py::arg("drl") = 0.0, py::arg("has_window") = false,
+      py::arg("x1") = 0.0, py::arg("x2") = 0.0, py::arg("y1") = 0.0,
+      py::arg("y2") = 0.0);
+
+  m.def("proc_implant_mc",
+      [](SimState& st, const std::string& species, double dose,
+         double energy_kev, long long ions, double tilt_deg, double rotation_deg,
+         unsigned long long seed, int threads, bool channeling,
+         bool has_window, double x1, double x2, double y1, double y2) {
+        std::ostringstream log;
+        const McImplantStats s = proc::implant_mc(st, species, dose, energy_kev,
+            ions, tilt_deg, rotation_deg, seed, threads, channeling,
+            has_window, x1, x2, y1, y2, &log);
+        return py::make_tuple(s, log.str());
+      },
+      py::arg("state"), py::arg("species"), py::arg("dose"),
+      py::arg("energy_kev"), py::arg("ions") = 100000,
+      py::arg("tilt_deg") = 0.0, py::arg("rotation_deg") = 0.0,
+      py::arg("seed") = 1, py::arg("threads") = 0, py::arg("channeling") = false,
+      py::arg("has_window") = false, py::arg("x1") = 0.0, py::arg("x2") = 0.0,
+      py::arg("y1") = 0.0, py::arg("y2") = 0.0);
+
+  m.def("proc_photo",
+      [](SimState& st, double thickness, int nz_add) {
+        std::ostringstream log;
+        proc::photo(st, thickness, nz_add, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("thickness"), py::arg("nz") = 4);
+
+  m.def("proc_mask",
+      [](SimState& st, double x1, double x2, double y1, double y2) {
+        std::ostringstream log;
+        proc::mask(st, x1, x2, y1, y2, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("x1"), py::arg("x2"), py::arg("y1"),
+      py::arg("y2"));
+
+  m.def("proc_strip",
+      [](SimState& st) {
+        std::ostringstream log;
+        proc::strip(st, &log);
+        return log.str();
+      },
+      py::arg("state"));
+
+  m.def("proc_add_bc",
+      [](SimState& st, const std::string& species, int patch, double conc) {
+        std::ostringstream log;
+        proc::add_bc(st, species, patch, conc, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("species"), py::arg("patch"), py::arg("conc"));
+
+  m.def("proc_clear_bc",
+      [](SimState& st) { proc::clear_bc(st, nullptr); }, py::arg("state"));
+
+  m.def("proc_diffuse",
+      [](SimState& st, const DiffuseOpts& opts) {
+        std::ostringstream log;
+        proc::diffuse(st, opts, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("opts"));
+
+  m.def("proc_save",
+      [](SimState& st, const std::string& path) {
+        std::ostringstream log;
+        proc::save(st, path, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("path"));
+
+  m.def("find_patch",
+      [](const SimState& st, const std::string& name) {
+        return st.mesh.find_patch(name);
+      },
+      py::arg("state"), py::arg("patch_name"),
+      "Patch index for a named boundary (xmin/xmax/.../zmax), or -1.");
 
   // -----------------------------------------------------------------------
   // Convenience: unit conversions

@@ -28,6 +28,7 @@ add_library(cprocess_core
   src/mc_implant.cpp
   src/diffusion.cpp
   src/vtk_writer.cpp
+  src/process.cpp
   src/deck.cpp)
 target_include_directories(cprocess_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set_target_properties(cprocess_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
