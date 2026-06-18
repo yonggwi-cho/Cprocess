@@ -45,6 +45,9 @@ endif()
 add_executable(cprocess src/main.cpp)
 target_link_libraries(cprocess PRIVATE cprocess_core)
 
+add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
+target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
+
 enable_testing()
 foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics)
   add_executable(test_${t} tests/test_${t}.cpp)
