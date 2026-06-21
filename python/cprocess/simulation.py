@@ -159,7 +159,7 @@ class Simulation:
 
     def mask(self, x1: float, x2: float,
              y1: float = None, y2: float = None) -> "Simulation":
-        """Expose and develop a window in the resist (micrometres).
+        """Expose and develop a rectangular window in the resist (micrometres).
 
         y-range defaults to the full device width.
         """
@@ -167,6 +167,45 @@ class Simulation:
         yy1 = bb[0][1] if y1 is None else y1 * UM
         yy2 = bb[1][1] if y2 is None else y2 * UM
         self._emit(_c.proc_mask(self._st, x1 * UM, x2 * UM, yy1, yy2))
+        return self
+
+    def mask_polygon(self, poly) -> "Simulation":
+        """Expose a polygon-shaped window in the resist.
+
+        poly: sequence of (x, y) tuples in micrometres, e.g.::
+
+            sim.mask_polygon([(0.1, 0.1), (0.3, 0.0), (0.5, 0.2), (0.2, 0.4)])
+
+        The polygon is automatically closed (last vertex connects to first).
+        """
+        poly_cm = [(x * UM, y * UM) for x, y in poly]
+        self._emit(_c.proc_mask_polygon(self._st, poly_cm))
+        return self
+
+    def deposit(self, material: str, thickness: float,
+                nz: int = 2, poly=None) -> "Simulation":
+        """Deposit a film on the top surface.
+
+        material: 'oxide', 'nitride', 'poly', 'silicon', ...
+        thickness: film thickness in micrometres.
+        poly: optional sequence of (x, y) tuples in micrometres that restricts
+              the deposit to a polygon footprint; omit for blanket deposition.
+        """
+        poly_cm = [(x * UM, y * UM) for x, y in poly] if poly else []
+        self._emit(_c.proc_deposit(self._st, material, thickness * UM,
+                                   int(nz), poly_cm))
+        return self
+
+    def etch(self, depth: float, poly=None) -> "Simulation":
+        """Etch the top surface down by `depth` micrometres.
+
+        poly: optional sequence of (x, y) tuples in micrometres that restricts
+              the etch to a polygon footprint; omit for blanket etch.
+
+        Etched cells are retagged as 'gas' and their concentrations are zeroed.
+        """
+        poly_cm = [(x * UM, y * UM) for x, y in poly] if poly else []
+        self._emit(_c.proc_etch(self._st, depth * UM, poly_cm))
         return self
 
     def strip(self) -> "Simulation":

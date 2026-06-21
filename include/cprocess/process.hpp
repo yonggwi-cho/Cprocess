@@ -56,9 +56,33 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
 // Photoresist lithography.
 void photo(SimState& st, double thickness, int nz_add = 4,
            std::ostream* log = nullptr);
+// Rectangular mask opening (convenience wrapper around mask_polygon).
 void mask(SimState& st, double x1, double x2, double y1, double y2,
           std::ostream* log = nullptr);
+// Arbitrary 2-D polygon mask opening. `poly` is a list of (x,y) vertices in
+// cm defining a closed polygon; winding-number point-in-polygon test is used.
+// Resist cells whose centroid projects inside the polygon are opened (vacuum).
+void mask_polygon(SimState& st,
+                  const std::vector<std::pair<double,double>>& poly,
+                  std::ostream* log = nullptr);
 void strip(SimState& st, std::ostream* log = nullptr);
+
+// Deposit a blanket or polygon-shaped film of `material` (oxide/nitride/poly)
+// on the current top surface. `poly` restricts deposition to cells whose XY
+// centroid is inside the polygon; empty vector means blanket (full surface).
+// `thickness` in cm, returned mesh is the new top after deposition.
+void deposit(SimState& st, const std::string& material,
+             double thickness, int nz_add = 2,
+             const std::vector<std::pair<double,double>>& poly = {},
+             std::ostream* log = nullptr);
+
+// Etch the silicon (or whichever surface material) down by `depth` (cm) in
+// the region defined by `poly`; empty vector means blanket etch.
+// Cells within `depth` of the top surface and inside `poly` are tagged as
+// the material "etch" (gas/vacuum) so subsequent implants/diffusions skip them.
+void etch(SimState& st, double depth,
+          const std::vector<std::pair<double,double>>& poly = {},
+          std::ostream* log = nullptr);
 
 // Dirichlet boundary conditions for diffusion.
 void add_bc(SimState& st, const std::string& species, int patch, double conc,

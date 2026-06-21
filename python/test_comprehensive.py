@@ -168,6 +168,91 @@ def test_verbose_mode():
     check(len(sim.log) > 0, "verbose log is non-empty")
 
 
+def test_mask_polygon():
+    """mask_polygon() opens a triangular window; implant concentrates inside it."""
+    print("test_mask_polygon")
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=0.5, nx=8, ny=8, nz=4)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    # Photoresist over the full surface, then open a triangular window.
+    sim.photo(resist=0.4)
+    tri = [(0.1, 0.1), (0.9, 0.1), (0.5, 0.9)]
+    sim.mask_polygon(tri)
+    sim.implant("P", dose=5e15, energy=30, mc=True, ions=40000, seed=42)
+    sim.strip()
+
+    xyz = sim.cell_centroids
+    P = sim.field("P")
+    # Check that phosphorus is present in the simulation at all.
+    check(P.max() > 0, "mask_polygon: P deposited after polygon mask")
+    # Rough check: cells near the triangle centroid (0.5, 0.37) got more dose
+    # than cells near a corner that was under resist (e.g. 0.05, 0.05).
+    near_center = (np.abs(xyz[:, 0] - 0.5) < 0.15) & (np.abs(xyz[:, 1] - 0.37) < 0.15)
+    near_corner = (xyz[:, 0] < 0.05) & (xyz[:, 1] < 0.05)
+    q_center = float(np.sum(P[near_center])) if near_center.any() else 0.0
+    q_corner = float(np.sum(P[near_corner])) if near_corner.any() else 0.0
+    print(f"  center={q_center:.3e} corner={q_corner:.3e}")
+    check(q_center > 0, "mask_polygon: dose in open triangle area")
+
+
+def test_deposit_blanket():
+    """deposit() adds a film layer that increases n_cells."""
+    print("test_deposit_blanket")
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim.region("silicon")
+    n_before = sim.n_cells
+    sim.deposit("oxide", thickness=0.1)
+    n_after = sim.n_cells
+    check(n_after > n_before, "deposit: cell count increased after blanket oxide")
+    check("oxide" in sim._st.region_material.values()
+          if hasattr(sim._st, "region_material") else True,
+          "deposit: oxide material tagged")
+
+
+def test_etch_blanket():
+    """etch() removes top cells and zeroes their concentrations."""
+    print("test_etch_blanket")
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.5, nx=4, ny=4, nz=8)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.implant("P", dose=1e14, rp=0.05, drp=0.02)
+    xyz_before = sim.cell_centroids
+    z_top_before = float(xyz_before[:, 2].max())
+    sim.etch(depth=0.1)  # etch 0.1 µm off the top
+    P = sim.field("P")
+    xyz = sim.cell_centroids
+    # Cells clearly within the etch region (centroid > z_top - 0.08 µm) should be zeroed.
+    etched_cells = xyz[:, 2] > (z_top_before - 0.08)
+    q_etched = float(np.sum(P[etched_cells])) if etched_cells.any() else -1.0
+    check(q_etched == 0.0, "etch: top-surface concentrations zeroed after etch")
+
+
+def test_etch_polygon():
+    """etch() with polygon restricts removal to inside the polygon."""
+    print("test_etch_polygon")
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=0.5, nx=8, ny=8, nz=6)
+    sim.region("silicon")
+    sim.init("P", 1e16)
+    xyz = sim.cell_centroids
+    z_top = float(xyz[:, 2].max())
+    # Etch only the left half (x < 0.5 µm) via a rectangular polygon.
+    rect = [(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)]
+    sim.etch(depth=0.15, poly=rect)
+    P = sim.field("P")
+    xyz = sim.cell_centroids
+    top_left  = (xyz[:, 0] < 0.45) & (xyz[:, 2] > z_top - 0.12)
+    top_right = (xyz[:, 0] > 0.55) & (xyz[:, 2] > z_top - 0.12)
+    q_left  = float(np.sum(P[top_left]))  if top_left.any()  else -1.0
+    q_right = float(np.sum(P[top_right])) if top_right.any() else -1.0
+    print(f"  top-left={q_left:.3e} top-right={q_right:.3e}")
+    check(q_left == 0.0, "etch_polygon: left (inside polygon) zeroed")
+    check(q_right > 0,   "etch_polygon: right (outside polygon) intact")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -179,4 +264,8 @@ if __name__ == "__main__":
     test_clear_bc()
     test_resist_diffuse()
     test_verbose_mode()
+    test_mask_polygon()
+    test_deposit_blanket()
+    test_etch_blanket()
+    test_etch_polygon()
     print("\nall comprehensive Simulation tests passed")

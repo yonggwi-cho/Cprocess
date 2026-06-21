@@ -451,6 +451,46 @@ PYBIND11_MODULE(_cprocess, m) {
       py::arg("state"), py::arg("x1"), py::arg("x2"), py::arg("y1"),
       py::arg("y2"));
 
+  m.def("proc_mask_polygon",
+      [](SimState& st,
+         const std::vector<std::pair<double,double>>& poly) {
+        std::ostringstream log;
+        proc::mask_polygon(st, poly, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("poly"),
+      "Open a polygon-shaped window in the photoresist.\n"
+      "poly: list of (x, y) tuples in cm defining a closed polygon.\n"
+      "Returns a log string.");
+
+  m.def("proc_deposit",
+      [](SimState& st, const std::string& material, double thickness,
+         int nz_add,
+         const std::vector<std::pair<double,double>>& poly) {
+        std::ostringstream log;
+        proc::deposit(st, material, thickness, nz_add, poly, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("material"), py::arg("thickness"),
+      py::arg("nz_add") = 2,
+      py::arg("poly") = std::vector<std::pair<double,double>>{},
+      "Deposit a film on the top surface.\n"
+      "thickness in cm; poly restricts deposition (empty = blanket).\n"
+      "Returns a log string.");
+
+  m.def("proc_etch",
+      [](SimState& st, double depth,
+         const std::vector<std::pair<double,double>>& poly) {
+        std::ostringstream log;
+        proc::etch(st, depth, poly, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("depth"),
+      py::arg("poly") = std::vector<std::pair<double,double>>{},
+      "Etch the top surface down by depth (cm).\n"
+      "poly restricts the etch region (empty = blanket).\n"
+      "Returns a log string.");
+
   m.def("proc_strip",
       [](SimState& st) {
         std::ostringstream log;

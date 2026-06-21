@@ -37,6 +37,34 @@ std::string fmt(const char* f, double v) {
 
 // Build a box mesh covering the same (x,y) footprint as `base` but taller by
 // `thickness`, with `nz_add` extra layers stacked above the substrate.
+// Infer the (nx, ny, nz) cell counts of a regular box mesh from its nodes.
+// For a box mesh built with make_box_mesh(x0,x1,y0,y1,z0,z1,nx,ny,nz) there
+// are (nx+1)*(ny+1)*(nz+1) nodes placed on a regular grid; we recover nx/ny/nz
+// by counting unique coordinate values on each axis.
+static std::tuple<int,int,int> infer_box_dims(const Mesh& m) {
+  if (m.nodes.empty()) return {1, 1, 1};
+  std::vector<double> xs, ys, zs;
+  xs.reserve(m.nodes.size()); ys.reserve(m.nodes.size()); zs.reserve(m.nodes.size());
+  for (const Vec3& n : m.nodes) {
+    xs.push_back(n.x); ys.push_back(n.y); zs.push_back(n.z);
+  }
+  // Count unique values with tolerance.
+  auto count_unique = [](std::vector<double>& v) {
+    std::sort(v.begin(), v.end());
+    int cnt = 1;
+    for (std::size_t i = 1; i < v.size(); ++i)
+      if (v[i] - v[i-1] > 1e-12 * (v.back() - v.front() + 1e-20)) ++cnt;
+    return cnt;
+  };
+  const int nx = std::max(1, count_unique(xs) - 1);
+  const int ny = std::max(1, count_unique(ys) - 1);
+  const int nz = std::max(1, count_unique(zs) - 1);
+  return {nx, ny, nz};
+}
+
+// Extend a box mesh upward by `thickness`; preserve the original nx/ny but
+// add `nz_add` new layers in the extension region only.
+// Used by photo() (coarse is acceptable) — deposit() uses extend_mesh_exact().
 Mesh extend_mesh(const Mesh& base, double thickness, int nz_add) {
   const BBox bb = base.bbox();
   const double base_lz = bb.hi.z - bb.lo.z;
@@ -52,6 +80,18 @@ Mesh extend_mesh(const Mesh& base, double thickness, int nz_add) {
   const int nz_total = nz_base_est + nz_add;
   return make_box_mesh(bb.lo.x, bb.hi.x, bb.lo.y, bb.hi.y, bb.lo.z,
                        bb.lo.z + base_lz + thickness, nx_eff, nx_eff, nz_total);
+}
+
+// Extend a box mesh upward, preserving the original nx and ny exactly, and
+// adding `nz_add` layers proportionally sized to existing z-cell height.
+// Used by deposit() where mesh quality must be maintained.
+Mesh extend_mesh_exact(const Mesh& base, double thickness, int nz_add) {
+  const BBox bb = base.bbox();
+  const auto [nx, ny, nz] = infer_box_dims(base);
+  const double base_lz = bb.hi.z - bb.lo.z;
+  const int nz_total = nz + nz_add;
+  return make_box_mesh(bb.lo.x, bb.hi.x, bb.lo.y, bb.hi.y, bb.lo.z,
+                       bb.lo.z + base_lz + thickness, nx, ny, nz_total);
 }
 
 const Dopant* dopant_or_throw(const std::string& species) {
@@ -269,25 +309,62 @@ void photo(SimState& st, double thickness, int nz_add, std::ostream* log) {
   }
 }
 
+// Winding-number point-in-polygon test for a closed polygon given as (x,y) pairs.
+// Returns true when (px,py) is strictly inside or on the boundary.
+static bool point_in_polygon(double px, double py,
+                              const std::vector<std::pair<double,double>>& poly) {
+  const int n = static_cast<int>(poly.size());
+  if (n < 3) return false;
+  int winding = 0;
+  for (int i = 0; i < n; ++i) {
+    const auto [ax, ay] = poly[i];
+    const auto [bx, by] = poly[(i + 1) % n];
+    if (ay <= py) {
+      if (by > py) {
+        // upward crossing
+        const double cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+        if (cross > 0) ++winding;
+      }
+    } else {
+      if (by <= py) {
+        // downward crossing
+        const double cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+        if (cross < 0) --winding;
+      }
+    }
+  }
+  return winding != 0;
+}
+
 void mask(SimState& st, double x1, double x2, double y1, double y2,
           std::ostream* log) {
   need_mesh(st);
   if (!st.has_stack) throw std::runtime_error("no resist present; photo first");
   if (!(x2 > x1)) throw std::runtime_error("mask requires x2 > x1");
   if (!(y2 > y1)) throw std::runtime_error("mask requires y2 > y1");
+  // Delegate to mask_polygon with a rectangle.
+  mask_polygon(st, {{x1, y1}, {x2, y1}, {x2, y2}, {x1, y2}}, log);
+}
+
+void mask_polygon(SimState& st,
+                  const std::vector<std::pair<double,double>>& poly,
+                  std::ostream* log) {
+  need_mesh(st);
+  if (!st.has_stack) throw std::runtime_error("no resist present; photo first");
+  if (poly.size() < 3) throw std::runtime_error("mask_polygon requires >= 3 vertices");
   int opened = 0;
   const int nc_s = static_cast<int>(st.stack.cells.size());
   for (int ci = 0; ci < nc_s; ++ci) {
     if (st.stack_cell_mat[ci] != 1) continue;
     const Vec3& c = st.stack.cell_cent[ci];
-    if (c.x >= x1 && c.x <= x2 && c.y >= y1 && c.y <= y2) {
+    if (point_in_polygon(c.x, c.y, poly)) {
       st.stack_cell_mat[ci] = 2;  // vacuum / developed opening
       ++opened;
     }
   }
   if (log)
-    *log << "[mask] x=[" << fmt("%.4g", x1 * 1e4) << "," << fmt("%.4g", x2 * 1e4)
-         << "] um -> opened " << opened << " cells\n";
+    *log << "[mask_polygon] " << poly.size() << " vertices -> opened "
+         << opened << " cells\n";
 }
 
 void strip(SimState& st, std::ostream* log) {
@@ -301,6 +378,129 @@ void strip(SimState& st, std::ostream* log) {
   st.mat_table.clear();
   st.stack_resist_z0 = 0;
   if (log) *log << "[strip] photoresist removed\n";
+}
+
+void deposit(SimState& st, const std::string& material,
+             double thickness, int nz_add,
+             const std::vector<std::pair<double,double>>& poly,
+             std::ostream* log) {
+  need_mesh(st);
+  if (thickness <= 0) throw std::runtime_error("deposit: thickness must be > 0");
+
+  // Validate material name.
+  static const char* known[] = {"oxide", "sio2", "nitride", "si3n4", "poly",
+                                 "polysilicon", "silicon", "si"};
+  const std::string mat = lower(material);
+  if (std::none_of(std::begin(known), std::end(known),
+                   [&](const char* k) { return mat == k; }))
+    throw std::runtime_error("deposit: unknown material '" + material + "'");
+
+  // Extend the mesh upward preserving original nx/ny resolution.
+  Mesh ext = extend_mesh_exact(st.mesh, thickness, nz_add);
+  const BBox bb = st.mesh.bbox();
+  const double z_top = bb.hi.z;
+
+  // Tag newly added cells as `material` when they are (a) above the old surface
+  // and (b) inside the polygon (or unconditionally if poly is empty).
+  const bool use_poly = poly.size() >= 3;
+  for (int tag : ext.region_tags()) st.region_material[tag] = "silicon";
+
+  // We store the deposit material in the region_material map keyed by a new
+  // synthetic region tag that doesn't conflict with existing ones.
+  const auto existing_tags = st.mesh.region_tags();
+  const int max_tag = existing_tags.empty() ? 0
+      : *std::max_element(existing_tags.begin(), existing_tags.end());
+  const int dep_tag = max_tag + 1000;  // synthetic tag for deposited film
+
+  const int nc_ext = static_cast<int>(ext.cells.size());
+  ext.cell_region.resize(nc_ext, 0);
+  // Keep existing cell_region for the base cells; set deposited cells.
+  // ext is a fresh mesh, so re-populate cell_region from centroids.
+  for (int ci = 0; ci < nc_ext; ++ci) {
+    const Vec3& c = ext.cell_cent[ci];
+    if (c.z > z_top) {
+      // New deposited cell: apply polygon filter.
+      if (!use_poly || point_in_polygon(c.x, c.y, poly))
+        ext.cell_region[ci] = dep_tag;
+    }
+  }
+  st.region_material[dep_tag] = mat;
+
+  // Transfer all existing fields to the extended mesh (new cells start at 0).
+  for (auto& [sym, conc] : st.fields) {
+    std::vector<double> new_conc(nc_ext, 0.0);
+    // Nearest-centroid transfer from old mesh.
+    for (int ci = 0; ci < nc_ext; ++ci) {
+      double best = 1e300;
+      int best_j = 0;
+      const Vec3& cc = ext.cell_cent[ci];
+      const int nc_old = static_cast<int>(st.mesh.cells.size());
+      for (int j = 0; j < nc_old; ++j) {
+        const Vec3& oc = st.mesh.cell_cent[j];
+        const double dx = cc.x - oc.x, dy = cc.y - oc.y, dz = cc.z - oc.z;
+        const double d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; best_j = j; }
+      }
+      new_conc[ci] = conc[best_j];
+    }
+    conc = std::move(new_conc);
+  }
+
+  st.mesh = std::move(ext);
+
+  if (log)
+    *log << "[deposit] " << material << " thickness="
+         << fmt("%.4g", thickness * 1e4) << " um"
+         << (use_poly ? " (polygon masked)" : " (blanket)")
+         << ", mesh now " << st.mesh.cells.size() << " tets\n";
+}
+
+void etch(SimState& st, double depth,
+          const std::vector<std::pair<double,double>>& poly,
+          std::ostream* log) {
+  need_mesh(st);
+  if (depth <= 0) throw std::runtime_error("etch: depth must be > 0");
+
+  const BBox bb = st.mesh.bbox();
+  const double z_top = bb.hi.z;
+  const double z_cut = z_top - depth;
+  const bool use_poly = poly.size() >= 3;
+
+  // Cells with centroid above z_cut and inside the polygon are retagged as gas.
+  // Find or create a "gas" region tag.
+  int gas_tag = -1;
+  for (const auto& [t, m] : st.region_material)
+    if (m == "gas") { gas_tag = t; break; }
+  if (gas_tag < 0) {
+    const auto etags = st.mesh.region_tags();
+    const int max_tag = etags.empty() ? 0
+        : *std::max_element(etags.begin(), etags.end());
+    gas_tag = max_tag + 2000;
+    st.region_material[gas_tag] = "gas";
+  }
+
+  int etched = 0;
+  const int nc = static_cast<int>(st.mesh.cells.size());
+  if (st.mesh.cell_region.size() != static_cast<std::size_t>(nc))
+    st.mesh.cell_region.resize(nc, 0);
+
+  for (int ci = 0; ci < nc; ++ci) {
+    const Vec3& c = st.mesh.cell_cent[ci];
+    if (c.z < z_cut) continue;  // below etch depth
+    if (use_poly && !point_in_polygon(c.x, c.y, poly)) continue;
+    st.mesh.cell_region[ci] = gas_tag;
+    ++etched;
+  }
+
+  // Zero out concentrations in etched cells (material removed).
+  for (auto& [sym, conc] : st.fields)
+    for (int ci = 0; ci < nc; ++ci)
+      if (st.mesh.cell_region[ci] == gas_tag) conc[ci] = 0.0;
+
+  if (log)
+    *log << "[etch] depth=" << fmt("%.4g", depth * 1e4) << " um"
+         << (use_poly ? " (polygon masked)" : " (blanket)")
+         << ", etched " << etched << " cells\n";
 }
 
 void add_bc(SimState& st, const std::string& species, int patch, double conc,
