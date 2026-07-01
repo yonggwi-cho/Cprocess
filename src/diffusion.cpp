@@ -92,6 +92,55 @@ void DiffusionSolver::build() {
     fslot_[fi] = {A_.find(f.owner, f.neigh), A_.find(f.neigh, f.owner)};
   }
 
+  // Greedy coloring of active faces. Two faces conflict if they share a cell
+  // (owner or neigh); giving each face the lowest color used by none of its
+  // already-colored conflicting faces guarantees that same-color faces write to
+  // disjoint cell rows, so parallel scatter-add needs no atomics.
+  //
+  // A face contributes to a cell row iff it writes that cell's diagonal/rhs:
+  //   kInternal   -> owner and neigh
+  //   kBoundOwner -> owner only
+  // (kBoundNeigh / kInactive touch no active row and are skipped.)
+  auto writes_cells = [&](int fi, int& c0, int& c1) {
+    const Face& f = mesh_.faces[fi];
+    c0 = f.owner;
+    c1 = (fg_[fi].kind == kInternal) ? f.neigh : -1;
+  };
+  std::vector<std::vector<int>> cell_faces(nc);
+  std::vector<int> active_faces;
+  for (int fi = 0; fi < nf; ++fi) {
+    if (fg_[fi].kind != kInternal && fg_[fi].kind != kBoundOwner) continue;
+    int c0, c1;
+    writes_cells(fi, c0, c1);
+    cell_faces[c0].push_back(fi);
+    if (c1 >= 0) cell_faces[c1].push_back(fi);
+    active_faces.push_back(fi);
+  }
+  std::vector<int> face_color(nf, -1);
+  std::vector<int> forbidden;  // forbidden[color] == fi means color taken
+  int ncolors = 0;
+  for (int fi : active_faces) {
+    int c0, c1;
+    writes_cells(fi, c0, c1);
+    // Mark colors already used by faces sharing either incident cell.
+    for (int cc : {c0, c1}) {
+      if (cc < 0) continue;
+      for (int gf : cell_faces[cc]) {
+        const int gc = face_color[gf];
+        if (gc < 0) continue;
+        if (gc >= static_cast<int>(forbidden.size())) forbidden.resize(gc + 1, -1);
+        forbidden[gc] = fi;
+      }
+    }
+    int color = 0;
+    while (color < static_cast<int>(forbidden.size()) && forbidden[color] == fi)
+      ++color;
+    face_color[fi] = color;
+    ncolors = std::max(ncolors, color + 1);
+  }
+  face_colors_.assign(ncolors, {});
+  for (int fi : active_faces) face_colors_[face_color[fi]].push_back(fi);
+
   if (log_ && clamped_faces_ > 0)
     *log_ << "[diffuse] warning: " << clamped_faces_
           << " faces with poor orthogonality were clamped\n";
@@ -147,17 +196,22 @@ void DiffusionSolver::gradients(const std::vector<double>& c,
     grad[cell] += (w * dc) * d;  // accumulate rhs in `grad`
   };
 
-  for (std::size_t fi = 0; fi < mesh_.faces.size(); ++fi) {
-    const Face& f = mesh_.faces[fi];
-    switch (fg_[fi].kind) {
-      case kInternal: {
+  // Face-colored scatter so owner/neigh accumulations never race in parallel.
+  // kBoundNeigh faces write only the neigh cell and are excluded from the
+  // coloring (they touch no "active row" for assembly), so handle them in a
+  // separate serial pass — they are few (material interfaces) and cheap.
+  for (const auto& color : face_colors_) {
+    const int mfc = static_cast<int>(color.size());
+#pragma omp parallel for schedule(static)
+    for (int t = 0; t < mfc; ++t) {
+      const int fi = color[t];
+      const Face& f = mesh_.faces[fi];
+      if (fg_[fi].kind == kInternal) {
         const Vec3 d = mesh_.cell_cent[f.neigh] - mesh_.cell_cent[f.owner];
         const double dc = c[f.neigh] - c[f.owner];
         add_row(f.owner, d, dc);
         add_row(f.neigh, -1.0 * d, -dc);
-        break;
-      }
-      case kBoundOwner: {
+      } else if (fg_[fi].kind == kBoundOwner) {
         const Vec3 d = f.c - mesh_.cell_cent[f.owner];
         if (!std::isnan(bcface[fi])) {
           add_row(f.owner, d, bcface[fi] - c[f.owner]);
@@ -165,19 +219,18 @@ void DiffusionSolver::gradients(const std::vector<double>& c,
           const Vec3 nh = (1.0 / norm(f.S)) * f.S;
           add_row(f.owner, dot(d, nh) * nh, 0.0);
         }
-        break;
       }
-      case kBoundNeigh: {
-        const Vec3 d = f.c - mesh_.cell_cent[f.neigh];
-        const Vec3 nh = (1.0 / norm(f.S)) * f.S;
-        add_row(f.neigh, dot(d, nh) * nh, 0.0);
-        break;
-      }
-      default:
-        break;
     }
   }
+  for (std::size_t fi = 0; fi < mesh_.faces.size(); ++fi) {
+    if (fg_[fi].kind != kBoundNeigh) continue;
+    const Face& f = mesh_.faces[fi];
+    const Vec3 d = f.c - mesh_.cell_cent[f.neigh];
+    const Vec3 nh = (1.0 / norm(f.S)) * f.S;
+    add_row(f.neigh, dot(d, nh) * nh, 0.0);
+  }
 
+#pragma omp parallel for schedule(static)
   for (int i = 0; i < nc; ++i) {
     if (!mask_[i]) { grad[i] = Vec3{}; continue; }
     auto& g = G[i];
@@ -277,6 +330,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         gradients(c, bcface[s], grad);
 
         std::fill(A_.val.begin(), A_.val.end(), 0.0);
+#pragma omp parallel for schedule(static)
         for (int i = 0; i < nc; ++i) {
           if (!mask_[i]) {
             A_.val[diag_[i]] = 1.0;
@@ -286,36 +340,46 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
             rhs[i] = mesh_.cell_vol[i] / dt * cold[s][i];
           }
         }
-        for (int fi = 0; fi < nf; ++fi) {
-          const FGeom& g = fg_[fi];
-          const Face& f = mesh_.faces[fi];
-          if (g.kind == kInternal) {
-            const double dP = dcell[s][f.owner], dN = dcell[s][f.neigh];
-            if (dP <= 0 || dN <= 0) continue;
-            const double dh = (g.delP + g.delN) / (g.delP / dP + g.delN / dN);
-            const double tf = dh * g.g;
-            A_.val[diag_[f.owner]] += tf;
-            A_.val[diag_[f.neigh]] += tf;
-            A_.val[fslot_[fi][0]] -= tf;
-            A_.val[fslot_[fi][1]] -= tf;
-            if (o.nonortho) {
-              const Vec3 gf = g.wP * grad[f.owner] + (1.0 - g.wP) * grad[f.neigh];
-              const double corr = dh * dot(gf, g.k);
-              rhs[f.owner] += corr;
-              rhs[f.neigh] -= corr;
+        // Scatter face fluxes color by color: within a color no two faces share
+        // a cell, so the diagonal/rhs updates are race-free. The off-diagonal
+        // slots fslot_[fi][0/1] are unique to a face and never conflict.
+        for (const auto& color : face_colors_) {
+          const int mfc = static_cast<int>(color.size());
+#pragma omp parallel for schedule(static)
+          for (int t = 0; t < mfc; ++t) {
+            const int fi = color[t];
+            const FGeom& g = fg_[fi];
+            const Face& f = mesh_.faces[fi];
+            if (g.kind == kInternal) {
+              const double dP = dcell[s][f.owner], dN = dcell[s][f.neigh];
+              if (dP <= 0 || dN <= 0) continue;
+              const double dh = (g.delP + g.delN) / (g.delP / dP + g.delN / dN);
+              const double tf = dh * g.g;
+              A_.val[diag_[f.owner]] += tf;
+              A_.val[diag_[f.neigh]] += tf;
+              A_.val[fslot_[fi][0]] -= tf;
+              A_.val[fslot_[fi][1]] -= tf;
+              if (o.nonortho) {
+                const Vec3 gf = g.wP * grad[f.owner] + (1.0 - g.wP) * grad[f.neigh];
+                const double corr = dh * dot(gf, g.k);
+                rhs[f.owner] += corr;
+                rhs[f.neigh] -= corr;
+              }
+            } else if (g.kind == kBoundOwner && !std::isnan(bcface[s][fi])) {
+              const double tb = dcell[s][f.owner] * g.gb;
+              A_.val[diag_[f.owner]] += tb;
+              rhs[f.owner] += tb * bcface[s][fi];
             }
-          } else if (g.kind == kBoundOwner && !std::isnan(bcface[s][fi])) {
-            const double tb = dcell[s][f.owner] * g.gb;
-            A_.val[diag_[f.owner]] += tb;
-            rhs[f.owner] += tb * bcface[s][fi];
           }
         }
 
         x = c;  // warm start
-        SolveResult sr = cg_jacobi(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+        // ILU(0)-preconditioned CG (parallel, level-scheduled triangular solves)
+        // with a BiCGSTAB fallback for the occasional non-SPD assembly.
+        SolveResult sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
         if (!sr.converged) {
           x = c;
-          sr = bicgstab_jacobi(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
           if (!sr.converged)
             throw std::runtime_error(
                 "diffusion: linear solver failed (resid=" +

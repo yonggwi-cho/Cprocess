@@ -85,6 +85,10 @@ class DiffusionSolver {
   std::vector<int> diag_;                  // diagonal slot per cell
   std::vector<std::array<int, 2>> fslot_;  // (P,N) and (N,P) slots per face
   int clamped_faces_ = 0;                  // faces with poor orthogonality
+
+  // Greedy face coloring: faces within one color share no cell, so their
+  // scatter-adds into cell rows are race-free and can run in parallel.
+  std::vector<std::vector<int>> face_colors_;  // active face indices per color
 };
 
 }  // namespace cp

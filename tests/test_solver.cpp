@@ -54,6 +54,32 @@ int main() {
     std::printf("gmres(30): %d iters, resid %.2e\n", rg.iters, rg.resid);
   }
 
+  // ILU(0)-preconditioned CG: same manufactured solution, should converge in
+  // fewer iterations than plain Jacobi (ILU(0) is exact for a tridiagonal M).
+  x.assign(n, 0.0);
+  SolveResult ri = cg_ilu0(a, b, x, 1e-12, 2000);
+  CHECK(ri.converged);
+  for (int i = 0; i < n; ++i) CHECK_NEAR(x[i], xtrue[i], 1e-7);
+  std::printf("cg_ilu0: %d iters, resid %.2e\n", ri.iters, ri.resid);
+  CHECK(ri.iters <= r.iters);  // ILU(0) never worse than Jacobi here
+
+  x.assign(n, 0.0);
+  ri = bicgstab_ilu0(a, b, x, 1e-12, 2000);
+  CHECK(ri.converged);
+  for (int i = 0; i < n; ++i) CHECK_NEAR(x[i], xtrue[i], 1e-6);
+  std::printf("bicgstab_ilu0: %d iters, resid %.2e\n", ri.iters, ri.resid);
+
+  // ILU(0) factor + apply directly solves the tridiagonal system exactly
+  // (no fill-in is dropped for a tridiagonal matrix), so M^{-1} b == A^{-1} b.
+  {
+    ILU0 ilu;
+    ilu.factor(a);
+    std::vector<double> y;
+    ilu.apply(b, y);
+    for (int i = 0; i < n; ++i) CHECK_NEAR(y[i], xtrue[i], 1e-9);
+    std::printf("ilu0 exact for tridiagonal: ok\n");
+  }
+
   // Zero RHS edge case.
   std::vector<double> zb(n, 0.0);
   r = cg_jacobi(a, zb, x, 1e-12, 100);
