@@ -127,7 +127,7 @@ class Simulation:
                 rp: float = 0.0, drp: float = 0.0, drl: float = 0.0,
                 ions: int = 100000, tilt: float = 0.0, rotation: float = 0.0,
                 seed: int = 1, threads: int = 0, channeling: bool = False,
-                window=None):
+                window=None, damage: bool = False):
         """Ion implant.
 
         dose [cm^-2], energy [keV]. `mc=True` selects Monte-Carlo BCA, otherwise
@@ -135,6 +135,8 @@ class Simulation:
         `window=(x1,x2,y1,y2)` in micrometres restricts a geometric mask; for a
         *physical* resist mask use photo()/mask() instead. If a resist stack is
         present, an MC implant automatically transports through it.
+        `damage=True` seeds excess self-interstitials ("+1" model) into the "I"
+        field, which diffuse(ted=True) then uses for transient enhanced diffusion.
         """
         has_window = window is not None
         x1, x2, y1, y2 = (window if has_window else (0, 0, 0, 0))
@@ -142,12 +144,12 @@ class Simulation:
             stats, log = _c.proc_implant_mc(self._st, species, float(dose),
                 float(energy), int(ions), float(tilt), float(rotation),
                 int(seed), int(threads), bool(channeling), has_window,
-                x1 * UM, x2 * UM, y1 * UM, y2 * UM)
+                x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(damage))
             self._emit(log)
             return ImplantResult(stats, log)
         atoms, log = _c.proc_implant_gauss(self._st, species, float(dose),
             float(energy), rp * UM, drp * UM, drl * UM, has_window,
-            x1 * UM, x2 * UM, y1 * UM, y2 * UM)
+            x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(damage))
         self._emit(log)
         return atoms
 
@@ -228,8 +230,14 @@ class Simulation:
 
     def diffuse(self, time: float, temp: float, *,
                 dt: float = 0.0, field_enh: bool = True,
-                nonortho: bool = True) -> "Simulation":
-        """Anneal: `time` in minutes, `temp` in Celsius, `dt` in minutes."""
+                nonortho: bool = True, ted: bool = False) -> "Simulation":
+        """Anneal: `time` in minutes, `temp` in Celsius, `dt` in minutes.
+
+        `ted=True` enables transient enhanced diffusion, coupling the excess
+        self-interstitials seeded by implant(damage=True) into the dopant
+        diffusivity. The enhancement decays as interstitials reach the surface
+        sink and recombine, reproducing the initial fast-diffusion transient.
+        """
         opts = _c.DiffuseOpts()
         opts.time = time * MIN
         opts.temp = _celsius_to_k(temp)
@@ -237,7 +245,10 @@ class Simulation:
         opts.field_enh = field_enh
         opts.nonortho = nonortho
         opts.verbosity = 1 if self.verbose else 0
-        self._emit(_c.proc_diffuse(self._st, opts))
+        if ted:
+            self._emit(_c.proc_diffuse_ted(self._st, opts))
+        else:
+            self._emit(_c.proc_diffuse(self._st, opts))
         return self
 
     # -- output ----------------------------------------------------------------

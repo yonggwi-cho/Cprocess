@@ -57,6 +57,15 @@ class DiffusionSolver {
   void run(std::vector<SpeciesField>& fields,
            const std::vector<DirichletBC>& bcs, const DiffuseOpts& opts);
 
+  // Transient enhanced diffusion. Co-solves the excess self-interstitial field
+  // `psi` (cm^-3 above equilibrium, seeded by the caller's "+1" implant model)
+  // with the dopant fields. Each dopant's diffusivity is scaled by
+  //   (1 - fi) + fi * (1 + psi / C_I*),
+  // so the anneal starts with strongly enhanced diffusion that decays as the
+  // interstitial excess diffuses to the surface sink and recombines.
+  void run_ted(std::vector<SpeciesField>& fields, std::vector<double>& psi,
+               const std::vector<DirichletBC>& bcs, const DiffuseOpts& opts);
+
  private:
   enum FaceKind : char {
     kInactive = 0,   // both sides masked
@@ -76,6 +85,17 @@ class DiffusionSolver {
   void build();
   void gradients(const std::vector<double>& c, const std::vector<double>& bcface,
                  std::vector<Vec3>& grad) const;
+
+  // Assemble A_ and rhs for one backward-Euler scalar-transport step:
+  //   (V/dt + reaction*V) c - div(D grad c) = (V/dt) cold   (+ nonortho corr)
+  // `dcell` is the per-cell diffusivity, `bcface` the per-face Dirichlet value
+  // (NaN = none), `cgrad` the field used for the deferred gradient correction
+  // and to hold frozen (masked) cells. Uses the face coloring for parallelism.
+  void assemble(const std::vector<double>& dcell,
+                const std::vector<double>& cold,
+                const std::vector<double>& bcface,
+                const std::vector<double>& cgrad, double dt, double reaction,
+                bool nonortho, std::vector<double>& rhs, std::vector<Vec3>& grad);
 
   const Mesh& mesh_;
   std::vector<char> mask_;

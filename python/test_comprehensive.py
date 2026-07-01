@@ -253,6 +253,55 @@ def test_etch_polygon():
     check(q_right > 0,   "etch_polygon: right (outside polygon) intact")
 
 
+def _spread(sim, species):
+    """Mass-weighted standard deviation of a profile along z (micrometres)."""
+    c = sim.field(species)
+    v = sim.cell_volumes
+    z = sim.cell_centroids[:, 2]
+    m = float(np.sum(c * v))
+    if m <= 0:
+        return 0.0
+    mean = float(np.sum(c * v * z)) / m
+    var = float(np.sum(c * v * z * z)) / m - mean * mean
+    return float(np.sqrt(max(0.0, var)))
+
+
+def test_ted_enhancement():
+    """implant(damage=True) + diffuse(ted=True) spreads more than equilibrium."""
+    print("test_ted_enhancement")
+
+    def run(ted):
+        sim = cp.Simulation()
+        sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+        sim.region("silicon")
+        sim.implant("B", dose=1e14, rp=0.05, drp=0.02, damage=ted)
+        sim.diffuse(time=1.0, temp=900, ted=ted)  # 1 min at 900 C
+        return _spread(sim, "B")
+
+    s_eq = run(False)
+    s_ted = run(True)
+    print(f"  equilibrium spread={s_eq:.4f} um  ted spread={s_ted:.4f} um"
+          f"  ({s_ted / s_eq:.2f}x)")
+    check(s_ted > 1.3 * s_eq, "TED enhances diffusion vs equilibrium anneal")
+
+
+def test_ted_interstitial_field():
+    """implant(damage=True) seeds the 'I' interstitial field."""
+    print("test_ted_interstitial_field")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=20)
+    sim.region("silicon")
+    sim.implant("B", dose=1e14, rp=0.05, drp=0.02, damage=True)
+    check("I" in sim.field_names(), "interstitial field 'I' present after damage implant")
+    check(sim.field("I").max() > 0, "interstitial excess seeded")
+    # Without damage=True there should be no interstitials.
+    sim2 = cp.Simulation()
+    sim2.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=20)
+    sim2.region("silicon")
+    sim2.implant("B", dose=1e14, rp=0.05, drp=0.02)  # damage default False
+    check("I" not in sim2.field_names(), "no interstitials without damage=True")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -268,4 +317,6 @@ if __name__ == "__main__":
     test_deposit_blanket()
     test_etch_blanket()
     test_etch_polygon()
+    test_ted_enhancement()
+    test_ted_interstitial_field()
     print("\nall comprehensive Simulation tests passed")

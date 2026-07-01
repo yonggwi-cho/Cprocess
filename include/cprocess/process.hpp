@@ -41,7 +41,7 @@ void init(SimState& st, const std::string& species, double conc,
 double implant_gauss(SimState& st, const std::string& species, double dose,
                      double energy_kev, double rp, double drp, double drl,
                      bool has_window, double x1, double x2, double y1, double y2,
-                     std::ostream* log = nullptr);
+                     bool seed_damage = false, std::ostream* log = nullptr);
 
 // Monte Carlo (BCA) implant. When a photoresist stack is present (after
 // photo()), transport runs through the full physical stack and the profile is
@@ -51,7 +51,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                           double rotation_deg, unsigned long long seed,
                           int threads, bool channeling, bool has_window,
                           double x1, double x2, double y1, double y2,
-                          std::ostream* log = nullptr);
+                          bool seed_damage = false, std::ostream* log = nullptr);
 
 // Photoresist lithography.
 void photo(SimState& st, double thickness, int nz_add = 4,
@@ -90,6 +90,13 @@ void add_bc(SimState& st, const std::string& species, int patch, double conc,
 void clear_bc(SimState& st, std::ostream* log = nullptr);
 
 void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log = nullptr);
+
+// Transient enhanced diffusion. Uses the interstitial excess accumulated in the
+// "I" field (seeded by implants when damage=true, per the "+1" model) to
+// enhance dopant diffusivity, capturing the initial fast-diffusion transient.
+// The interstitial field decays via bulk recombination and the surface sink.
+void diffuse_ted(SimState& st, const DiffuseOpts& opts,
+                 std::ostream* log = nullptr);
 
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 

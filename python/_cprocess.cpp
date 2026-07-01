@@ -404,27 +404,29 @@ PYBIND11_MODULE(_cprocess, m) {
   m.def("proc_implant_gauss",
       [](SimState& st, const std::string& species, double dose,
          double energy_kev, double rp, double drp, double drl,
-         bool has_window, double x1, double x2, double y1, double y2) {
+         bool has_window, double x1, double x2, double y1, double y2,
+         bool damage) {
         std::ostringstream log;
         const double atoms = proc::implant_gauss(st, species, dose, energy_kev,
-            rp, drp, drl, has_window, x1, x2, y1, y2, &log);
+            rp, drp, drl, has_window, x1, x2, y1, y2, damage, &log);
         return py::make_tuple(atoms, log.str());
       },
       py::arg("state"), py::arg("species"), py::arg("dose"),
       py::arg("energy_kev") = 0.0, py::arg("rp") = 0.0, py::arg("drp") = 0.0,
       py::arg("drl") = 0.0, py::arg("has_window") = false,
       py::arg("x1") = 0.0, py::arg("x2") = 0.0, py::arg("y1") = 0.0,
-      py::arg("y2") = 0.0);
+      py::arg("y2") = 0.0, py::arg("damage") = false);
 
   m.def("proc_implant_mc",
       [](SimState& st, const std::string& species, double dose,
          double energy_kev, long long ions, double tilt_deg, double rotation_deg,
          unsigned long long seed, int threads, bool channeling,
-         bool has_window, double x1, double x2, double y1, double y2) {
+         bool has_window, double x1, double x2, double y1, double y2,
+         bool damage) {
         std::ostringstream log;
         const McImplantStats s = proc::implant_mc(st, species, dose, energy_kev,
             ions, tilt_deg, rotation_deg, seed, threads, channeling,
-            has_window, x1, x2, y1, y2, &log);
+            has_window, x1, x2, y1, y2, damage, &log);
         return py::make_tuple(s, log.str());
       },
       py::arg("state"), py::arg("species"), py::arg("dose"),
@@ -432,7 +434,7 @@ PYBIND11_MODULE(_cprocess, m) {
       py::arg("tilt_deg") = 0.0, py::arg("rotation_deg") = 0.0,
       py::arg("seed") = 1, py::arg("threads") = 0, py::arg("channeling") = false,
       py::arg("has_window") = false, py::arg("x1") = 0.0, py::arg("x2") = 0.0,
-      py::arg("y1") = 0.0, py::arg("y2") = 0.0);
+      py::arg("y1") = 0.0, py::arg("y2") = 0.0, py::arg("damage") = false);
 
   m.def("proc_photo",
       [](SimState& st, double thickness, int nz_add) {
@@ -517,6 +519,16 @@ PYBIND11_MODULE(_cprocess, m) {
         return log.str();
       },
       py::arg("state"), py::arg("opts"));
+
+  m.def("proc_diffuse_ted",
+      [](SimState& st, const DiffuseOpts& opts) {
+        std::ostringstream log;
+        proc::diffuse_ted(st, opts, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("opts"),
+      "Transient enhanced diffusion: interstitial-coupled anneal using the "
+      "'I' damage field seeded by implants with damage=True.");
 
   m.def("proc_save",
       [](SimState& st, const std::string& path) {

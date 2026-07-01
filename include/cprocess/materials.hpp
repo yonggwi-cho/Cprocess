@@ -23,6 +23,11 @@ struct Dopant {
   double dmm = 0, emm = 0;      // double negative
   double dp = 0, ep = 0;        // single positive (acceptors)
   double ss_pre = 0, ss_e = 0;  // solid solubility Arrhenius fit [cm^-3, eV]
+  // Fraction of diffusion mediated by self-interstitials (vs vacancies).
+  // Governs transient enhanced diffusion: the effective diffusivity is scaled
+  // by (1 - fi) + fi * (C_I / C_I*). B, P are interstitial-dominated (~1),
+  // As is mixed (~0.4), Sb is vacancy-dominated (~0.1).
+  double fi = 0.5;
   // Approximate projected range table {energy keV, Rp cm, dRp cm};
   // override with rp=/drp= in the deck for accurate work.
   std::vector<std::array<double, 3>> range;
@@ -42,6 +47,17 @@ double dopant_diffusivity(const Dopant& d, double temp_k, double n_over_ni);
 
 // Approximate solid solubility (electrically active limit) [cm^-3].
 double solid_solubility(const Dopant& d, double temp_k);
+
+// ── Self-interstitial point-defect model (for transient enhanced diffusion) ──
+// All values are order-of-magnitude literature fits for silicon; they set the
+// TED time-scale and magnitude and can be tuned. Isothermal, spatially uniform.
+//
+//   equilibrium concentration  C_I*(T)   [cm^-3]
+//   effective diffusivity      D_I(T)    [cm^2/s]
+//   bulk I-V recombination     k(T)      [1/s]  (excess relaxes as exp(-k t))
+double interstitial_cstar(double temp_k);
+double interstitial_diffusivity(double temp_k);
+double interstitial_recomb_rate(double temp_k);
 
 // Interpolates the range table (linear in log E). Returns false if the
 // dopant has no table; clamps outside the tabulated energy range.

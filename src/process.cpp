@@ -104,6 +104,20 @@ void need_mesh(const SimState& st) {
   if (!st.has_mesh) throw std::runtime_error("no mesh defined yet");
 }
 
+// "+1" damage model: an implant creates roughly one excess self-interstitial
+// per implanted ion, distributed like the added dopant profile. Accumulate that
+// excess into the "I" field (cm^-3), which diffuse_ted() consumes. `before` is
+// the dopant field prior to this implant (empty means all-zero baseline).
+void seed_interstitials(SimState& st, const std::vector<double>& before,
+                        const std::vector<double>& after) {
+  auto& I = st.fields["I"];
+  I.resize(st.mesh.cells.size(), 0.0);
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    const double added = after[i] - (i < before.size() ? before[i] : 0.0);
+    if (added > 0) I[i] += added;
+  }
+}
+
 }  // namespace
 
 std::vector<char> silicon_mask(const SimState& st) {
@@ -194,7 +208,7 @@ void init(SimState& st, const std::string& species, double conc, int region,
 double implant_gauss(SimState& st, const std::string& species, double dose,
                      double energy_kev, double rp, double drp, double drl,
                      bool has_window, double x1, double x2, double y1, double y2,
-                     std::ostream* log) {
+                     bool seed_damage, std::ostream* log) {
   need_mesh(st);
   ImplantParams p;
   p.dopant = dopant_or_throw(species);
@@ -211,7 +225,9 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
   p.x1 = x1; p.x2 = x2; p.y1 = y1; p.y2 = y2;
   auto& f = st.fields[p.dopant->symbol];
   f.resize(st.mesh.cells.size(), 0.0);
+  const std::vector<double> before = seed_damage ? f : std::vector<double>{};
   const double atoms = apply_implant(st.mesh, silicon_mask(st), p, f);
+  if (seed_damage) seed_interstitials(st, before, f);
   if (log)
     *log << "[implant] " << p.dopant->symbol << " gauss: dose="
          << fmt("%.3g", p.dose) << " cm^-2, Rp=" << fmt("%.4g", p.rp * 1e4)
@@ -224,11 +240,12 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                           double rotation_deg, unsigned long long seed,
                           int threads, bool channeling, bool has_window,
                           double x1, double x2, double y1, double y2,
-                          std::ostream* log) {
+                          bool seed_damage, std::ostream* log) {
   need_mesh(st);
   const Dopant* dop = dopant_or_throw(species);
   auto& f = st.fields[dop->symbol];
   f.resize(st.mesh.cells.size(), 0.0);
+  const std::vector<double> before = seed_damage ? f : std::vector<double>{};
 
   McImplantParams p;
   p.dopant = dop;
@@ -262,6 +279,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
     const std::vector<double> transferred =
         transfer_field_nearest(st.stack, stack_conc, st.mesh);
     for (std::size_t i = 0; i < f.size(); ++i) f[i] += transferred[i];
+    if (seed_damage) seed_interstitials(st, before, f);
 
     if (log) {
       const double n = static_cast<double>(p.ions);
@@ -274,6 +292,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
   }
 
   const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f);
+  if (seed_damage) seed_interstitials(st, before, f);
   if (log) {
     const double n = static_cast<double>(p.ions);
     *log << "[implant] " << dop->symbol << " MC: E=" << fmt("%.4g", p.energy_kev)
@@ -543,6 +562,32 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log);
   solver.run(fields, st.bcs, opts);
+  st.last_temp = opts.temp;
+}
+
+void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
+  need_mesh(st);
+  std::vector<SpeciesField> fields;
+  for (auto& [sym, conc] : st.fields) {
+    const Dopant* d = find_dopant(sym);
+    if (d) fields.push_back({d, &conc});
+  }
+  if (fields.empty()) {
+    if (log) *log << "[ted] no dopants present\n";
+    return;
+  }
+  // Interstitial excess field seeded by implants (damage=true). Absent means a
+  // plain equilibrium anneal — run_ted still works (S = 1 everywhere).
+  auto& psi = st.fields["I"];
+  psi.resize(st.mesh.cells.size(), 0.0);
+  if (log) {
+    *log << "[ted] T=" << fmt("%.5g", opts.temp) << " K, time="
+         << fmt("%.5g", opts.time) << " s, species:";
+    for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
+    *log << "\n";
+  }
+  DiffusionSolver solver(st.mesh, silicon_mask(st), log);
+  solver.run_ted(fields, psi, st.bcs, opts);
   st.last_temp = opts.temp;
 }
 

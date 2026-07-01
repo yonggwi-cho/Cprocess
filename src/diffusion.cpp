@@ -243,6 +243,61 @@ void DiffusionSolver::gradients(const std::vector<double>& c,
   }
 }
 
+void DiffusionSolver::assemble(const std::vector<double>& dcell,
+                               const std::vector<double>& cold,
+                               const std::vector<double>& bcface,
+                               const std::vector<double>& cgrad, double dt,
+                               double reaction, bool nonortho,
+                               std::vector<double>& rhs, std::vector<Vec3>& grad) {
+  const int nc = static_cast<int>(mesh_.cells.size());
+  gradients(cgrad, bcface, grad);
+
+  std::fill(A_.val.begin(), A_.val.end(), 0.0);
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < nc; ++i) {
+    if (!mask_[i]) {
+      A_.val[diag_[i]] = 1.0;
+      rhs[i] = cgrad[i];  // frozen cell holds its value
+    } else {
+      const double vd = mesh_.cell_vol[i] / dt;
+      A_.val[diag_[i]] = vd + reaction * mesh_.cell_vol[i];
+      rhs[i] = vd * cold[i];
+    }
+  }
+  // Scatter face fluxes color by color: within a color no two faces share a
+  // cell, so the diagonal/rhs updates are race-free. The off-diagonal slots
+  // fslot_[fi][0/1] are unique to a face and never conflict.
+  for (const auto& color : face_colors_) {
+    const int mfc = static_cast<int>(color.size());
+#pragma omp parallel for schedule(static)
+    for (int t = 0; t < mfc; ++t) {
+      const int fi = color[t];
+      const FGeom& g = fg_[fi];
+      const Face& f = mesh_.faces[fi];
+      if (g.kind == kInternal) {
+        const double dP = dcell[f.owner], dN = dcell[f.neigh];
+        if (dP <= 0 || dN <= 0) continue;
+        const double dh = (g.delP + g.delN) / (g.delP / dP + g.delN / dN);
+        const double tf = dh * g.g;
+        A_.val[diag_[f.owner]] += tf;
+        A_.val[diag_[f.neigh]] += tf;
+        A_.val[fslot_[fi][0]] -= tf;
+        A_.val[fslot_[fi][1]] -= tf;
+        if (nonortho) {
+          const Vec3 gf = g.wP * grad[f.owner] + (1.0 - g.wP) * grad[f.neigh];
+          const double corr = dh * dot(gf, g.k);
+          rhs[f.owner] += corr;
+          rhs[f.neigh] -= corr;
+        }
+      } else if (g.kind == kBoundOwner && !std::isnan(bcface[fi])) {
+        const double tb = dcell[f.owner] * g.gb;
+        A_.val[diag_[f.owner]] += tb;
+        rhs[f.owner] += tb * bcface[fi];
+      }
+    }
+  }
+}
+
 void DiffusionSolver::run(std::vector<SpeciesField>& fields,
                           const std::vector<DirichletBC>& bcs,
                           const DiffuseOpts& o) {
@@ -327,51 +382,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
       maxrel = 0;
       for (int s = 0; s < ns; ++s) {
         std::vector<double>& c = *fields[s].conc;
-        gradients(c, bcface[s], grad);
-
-        std::fill(A_.val.begin(), A_.val.end(), 0.0);
-#pragma omp parallel for schedule(static)
-        for (int i = 0; i < nc; ++i) {
-          if (!mask_[i]) {
-            A_.val[diag_[i]] = 1.0;
-            rhs[i] = c[i];
-          } else {
-            A_.val[diag_[i]] = mesh_.cell_vol[i] / dt;
-            rhs[i] = mesh_.cell_vol[i] / dt * cold[s][i];
-          }
-        }
-        // Scatter face fluxes color by color: within a color no two faces share
-        // a cell, so the diagonal/rhs updates are race-free. The off-diagonal
-        // slots fslot_[fi][0/1] are unique to a face and never conflict.
-        for (const auto& color : face_colors_) {
-          const int mfc = static_cast<int>(color.size());
-#pragma omp parallel for schedule(static)
-          for (int t = 0; t < mfc; ++t) {
-            const int fi = color[t];
-            const FGeom& g = fg_[fi];
-            const Face& f = mesh_.faces[fi];
-            if (g.kind == kInternal) {
-              const double dP = dcell[s][f.owner], dN = dcell[s][f.neigh];
-              if (dP <= 0 || dN <= 0) continue;
-              const double dh = (g.delP + g.delN) / (g.delP / dP + g.delN / dN);
-              const double tf = dh * g.g;
-              A_.val[diag_[f.owner]] += tf;
-              A_.val[diag_[f.neigh]] += tf;
-              A_.val[fslot_[fi][0]] -= tf;
-              A_.val[fslot_[fi][1]] -= tf;
-              if (o.nonortho) {
-                const Vec3 gf = g.wP * grad[f.owner] + (1.0 - g.wP) * grad[f.neigh];
-                const double corr = dh * dot(gf, g.k);
-                rhs[f.owner] += corr;
-                rhs[f.neigh] -= corr;
-              }
-            } else if (g.kind == kBoundOwner && !std::isnan(bcface[s][fi])) {
-              const double tb = dcell[s][f.owner] * g.gb;
-              A_.val[diag_[f.owner]] += tb;
-              rhs[f.owner] += tb * bcface[s][fi];
-            }
-          }
-        }
+        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, rhs, grad);
 
         x = c;  // warm start
         // ILU(0)-preconditioned CG (parallel, level-scheduled triangular solves)
@@ -430,6 +441,188 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
                       "[diffuse]   %s: peak=%.4g cm^-3, integral=%.4g atoms\n",
                       fields[s].dopant->symbol.c_str(), peak, mass);
       }
+      *log_ << buf;
+    }
+  }
+}
+
+void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
+                              std::vector<double>& psi,
+                              const std::vector<DirichletBC>& bcs,
+                              const DiffuseOpts& o) {
+  const int nc = static_cast<int>(mesh_.cells.size());
+  const int nf = static_cast<int>(mesh_.faces.size());
+  const int ns = static_cast<int>(fields.size());
+  for (auto& sf : fields) {
+    if (!sf.dopant || !sf.conc) throw std::runtime_error("ted: bad field");
+    sf.conc->resize(nc, 0.0);
+  }
+  psi.resize(nc, 0.0);
+  std::sort(fields.begin(), fields.end(),
+            [](const SpeciesField& a, const SpeciesField& b) {
+              return a.dopant->symbol < b.dopant->symbol;
+            });
+
+  const double dt0 = (o.dt > 0) ? std::min(o.dt, o.time) : o.time / 50.0;
+  const int nsteps = static_cast<int>(std::ceil(o.time / dt0 - 1e-12));
+  const double ni = ni_si(o.temp);
+
+  // Interstitial parameters (isothermal, spatially uniform).
+  const double cstar = interstitial_cstar(o.temp);
+  const double d_I = interstitial_diffusivity(o.temp);
+  const double k_rec = interstitial_recomb_rate(o.temp);
+
+  // Per-species Dirichlet value per boundary face (NaN = none).
+  std::vector<std::vector<double>> bcface(ns, std::vector<double>(nf, kNaN));
+  for (int s = 0; s < ns; ++s)
+    for (const auto& bc : bcs) {
+      if (bc.species != fields[s].dopant->symbol || bc.patch < 0) continue;
+      for (int fi = 0; fi < nf; ++fi)
+        if (mesh_.faces[fi].patch == bc.patch && fg_[fi].kind == kBoundOwner &&
+            mesh_.faces[fi].neigh < 0)
+          bcface[s][fi] = bc.conc;
+    }
+
+  // Interstitial surface sink: excess psi = 0 at the top (zmax) surface, where
+  // interstitials recombine at the surface. This drives the transient decay and
+  // TED's characteristic depth asymmetry.
+  const int ztop = mesh_.find_patch("zmax");
+  std::vector<double> psi_bcface(nf, kNaN);
+  for (int fi = 0; fi < nf; ++fi)
+    if (mesh_.faces[fi].patch == ztop && fg_[fi].kind == kBoundOwner &&
+        mesh_.faces[fi].neigh < 0)
+      psi_bcface[fi] = 0.0;
+
+  // Interstitial diffusivity is constant in silicon, zero in frozen regions.
+  std::vector<double> dI(nc, 0.0);
+  for (int i = 0; i < nc; ++i) dI[i] = mask_[i] ? d_I : 0.0;
+
+  std::vector<double> mass0(ns, 0.0);
+  for (int s = 0; s < ns; ++s)
+    for (int i = 0; i < nc; ++i)
+      mass0[s] += (*fields[s].conc)[i] * mesh_.cell_vol[i];
+
+  std::vector<std::vector<double>> cold(ns), dcell(ns, std::vector<double>(nc, 0.0));
+  std::vector<double> psi_old(nc), nni(nc, 1.0), rhs(nc), x;
+  std::vector<Vec3> grad;
+
+  double t = 0, s_peak0 = 0;
+  for (int i = 0; i < nc; ++i)
+    s_peak0 = std::max(s_peak0, 1.0 + psi[i] / cstar);
+
+  for (int step = 0; step < nsteps; ++step) {
+    const double dt = std::min(dt0, o.time - t);
+
+    // ── 1. Advance the interstitial excess one implicit step (linear). ──
+    psi_old = psi;
+    assemble(dI, psi_old, psi_bcface, psi_old, dt, k_rec, o.nonortho, rhs, grad);
+    x = psi;
+    SolveResult sp = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+    if (!sp.converged) { x = psi; bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit); }
+    psi = x;
+    for (double& v : psi) v = std::max(v, 0.0);
+
+    // Supersaturation S = 1 + psi/C_I* (>= 1) from the updated interstitials.
+    // The "+1" model over-counts free interstitials: most cluster into {311}
+    // defects that buffer the free concentration. Lacking an explicit cluster
+    // model, cap S at kSmax to keep the free supersaturation physical (~1e3).
+    constexpr double kSmax = 3.0e3;
+    double smax = 0;
+    std::vector<double> S(nc, 1.0);
+    for (int i = 0; i < nc; ++i) {
+      S[i] = 1.0 + (mask_[i] ? std::min(psi[i] / cstar, kSmax) : 0.0);
+      smax = std::max(smax, S[i]);
+    }
+
+    // ── 2. Advance dopants with interstitial-enhanced diffusivity. ──
+    if (ns > 0) {
+      for (int s = 0; s < ns; ++s) cold[s] = *fields[s].conc;
+      double cmax = 0;
+      for (int s = 0; s < ns; ++s)
+        for (int i = 0; i < nc; ++i) cmax = std::max(cmax, (*fields[s].conc)[i]);
+      const double cfloor = 1e-3 * std::max(cmax, 1.0);
+
+      for (int picard = 1; picard <= o.max_picard; ++picard) {
+        for (int i = 0; i < nc; ++i) {
+          double nnet = 0;
+          for (int s = 0; s < ns; ++s) {
+            const double c = (*fields[s].conc)[i];
+            nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
+          }
+          const double cc = nnet / (2.0 * ni);
+          nni[i] = cc + std::sqrt(cc * cc + 1.0);
+        }
+        for (int s = 0; s < ns; ++s) {
+          const Dopant& dp = *fields[s].dopant;
+          for (int i = 0; i < nc; ++i) {
+            if (!mask_[i]) { dcell[s][i] = 0; continue; }
+            double dv = dopant_diffusivity(dp, o.temp, nni[i]);
+            if (o.field_enh) {
+              const bool ntype = nni[i] >= 1.0;
+              if ((dp.type == DopType::donor && ntype) ||
+                  (dp.type == DopType::acceptor && !ntype)) {
+                const double cc = 0.5 * (nni[i] - 1.0 / nni[i]);
+                dv *= 1.0 + std::fabs(cc) / std::sqrt(cc * cc + 1.0);
+              }
+            }
+            // Pair-diffusion enhancement: (1 - fi) + fi * S.
+            dv *= (1.0 - dp.fi) + dp.fi * S[i];
+            dcell[s][i] = dv;
+          }
+        }
+
+        double maxrel = 0;
+        for (int s = 0; s < ns; ++s) {
+          std::vector<double>& c = *fields[s].conc;
+          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, rhs, grad);
+          x = c;
+          SolveResult sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          if (!sr.converged) {
+            x = c;
+            sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+            if (!sr.converged)
+              throw std::runtime_error("ted: linear solver failed");
+          }
+          for (int i = 0; i < nc; ++i)
+            maxrel = std::max(maxrel,
+                              std::fabs(x[i] - c[i]) / (std::fabs(x[i]) + cfloor));
+          c = x;
+        }
+        if (maxrel < o.picard_tol) break;
+      }
+      for (int s = 0; s < ns; ++s)
+        for (double& v : *fields[s].conc) v = std::max(v, 0.0);
+    }
+
+    t += dt;
+    if (o.verbosity >= 1 && log_) {
+      const int every = std::max(1, nsteps / 10);
+      if (step % every == 0 || step == nsteps - 1) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "[ted]   step %4d/%d  t=%.4g s  Smax=%.3g\n",
+                      step + 1, nsteps, t, smax);
+        *log_ << buf;
+      }
+    }
+  }
+
+  if (log_ && o.verbosity >= 1) {
+    char b0[96];
+    std::snprintf(b0, sizeof(b0),
+                  "[ted]   initial Smax=%.3g, C_I*=%.3g cm^-3\n", s_peak0, cstar);
+    *log_ << b0;
+    for (int s = 0; s < ns; ++s) {
+      double mass = 0, peak = 0;
+      for (int i = 0; i < nc; ++i) {
+        mass += (*fields[s].conc)[i] * mesh_.cell_vol[i];
+        peak = std::max(peak, (*fields[s].conc)[i]);
+      }
+      char buf[200];
+      std::snprintf(buf, sizeof(buf),
+                    "[ted]   %s: peak=%.4g cm^-3, dose change=%+.3g%%\n",
+                    fields[s].dopant->symbol.c_str(), peak,
+                    mass0[s] > 0 ? (mass - mass0[s]) / mass0[s] * 100.0 : 0.0);
       *log_ << buf;
     }
   }

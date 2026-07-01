@@ -171,7 +171,8 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
         c.num_or("tilt", Unit::none, 0), c.num_or("rotation", Unit::none, 0),
         static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1)),
         static_cast<int>(c.num_or("threads", Unit::none, 0)),
-        c.flag_or("channeling", false), has_window, x1, x2, y1, y2, &log);
+        c.flag_or("channeling", false), has_window, x1, x2, y1, y2,
+        c.flag_or("damage", false), &log);
     return;
   }
   if (method != "gauss" && method != "gaussian" && method != "analytic")
@@ -186,7 +187,7 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
   }
   proc::implant_gauss(st, species, dose, energy, rp, drp,
                       c.num_or("drl", Unit::length, 0), has_window, x1, x2, y1, y2,
-                      &log);
+                      c.flag_or("damage", false), &log);
 }
 
 void cmd_photo(SimState& st, const Cmd& c, std::ostream& log) {
@@ -223,7 +224,10 @@ void cmd_diffuse(SimState& st, const Cmd& c, std::ostream& log) {
   o.field_enh = c.flag_or("fieldenh", true);
   o.nonortho = c.flag_or("nonortho", true);
   if (o.time <= 0) c.fail("time must be > 0");
-  proc::diffuse(st, o, &log);
+  if (c.flag_or("ted", false))
+    proc::diffuse_ted(st, o, &log);
+  else
+    proc::diffuse(st, o, &log);
 }
 
 void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
