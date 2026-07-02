@@ -493,6 +493,17 @@ PYBIND11_MODULE(_cprocess, m) {
       "poly restricts the etch region (empty = blanket).\n"
       "Returns a log string.");
 
+  m.def("proc_oxidize",
+      [](SimState& st, double time_s, double temp_k, bool wet) {
+        std::ostringstream log;
+        proc::oxidize(st, time_s, temp_k, wet, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("time_s"), py::arg("temp_k"),
+      py::arg("wet") = false,
+      "Blanket thermal oxidation (Deal-Grove). time in s, temp in K.\n"
+      "Returns a log string.");
+
   m.def("proc_strip",
       [](SimState& st) {
         std::ostringstream log;

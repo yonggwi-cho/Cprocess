@@ -11,6 +11,8 @@
 
 #include "cprocess/field_transfer.hpp"
 #include "cprocess/gmsh_reader.hpp"
+#include "cprocess/oxidation.hpp"
+#include "cprocess/remesh.hpp"
 #include "cprocess/vtk_writer.hpp"
 
 namespace cp {
@@ -520,6 +522,149 @@ void etch(SimState& st, double depth,
     *log << "[etch] depth=" << fmt("%.4g", depth * 1e4) << " um"
          << (use_poly ? " (polygon masked)" : " (blanket)")
          << ", etched " << etched << " cells\n";
+}
+
+namespace {
+bool is_oxide(const std::string& mat) {
+  const std::string m = lower(mat);
+  return m == "oxide" || m == "sio2";
+}
+}  // namespace
+
+double oxidize(SimState& st, double time_s, double temp_k, bool wet,
+               std::ostream* log) {
+  need_mesh(st);
+  if (st.has_stack)
+    throw std::runtime_error("oxidize: resist stack is present; strip first");
+  if (time_s <= 0) throw std::runtime_error("oxidize: time_s must be > 0");
+
+  // (b) Measure existing oxide thickness.
+  const int nc0 = static_cast<int>(st.mesh.cells.size());
+  auto material_of = [&](int tag) -> std::string {
+    auto it = st.region_material.find(tag);
+    return it == st.region_material.end() ? "silicon" : it->second;
+  };
+
+  double z_si_top = -1e300;
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (!is_silicon(material_of(st.mesh.cell_region[ci]))) continue;
+    const auto& cell = st.mesh.cells[ci];
+    for (int k = 0; k < 4; ++k)
+      z_si_top = std::max(z_si_top, st.mesh.nodes[cell[k]].z);
+  }
+  const BBox bb0 = st.mesh.bbox();
+  const double z_top = bb0.hi.z;
+  if (z_si_top < -1e299) z_si_top = z_top;  // no silicon at all; degenerate
+
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (st.mesh.cell_cent[ci].z <= z_si_top) continue;
+    const std::string mat = material_of(st.mesh.cell_region[ci]);
+    if (!is_oxide(mat))
+      throw std::runtime_error(
+          "oxidize: top surface is not bare Si or SiO2");
+  }
+  double x0_cm = z_top - z_si_top;
+  if (x0_cm < 1e-9) x0_cm = 0.0;
+
+  // (c) Deal-Grove increment (unit conversion: cm -> um, s -> min, K -> C).
+  const double x_new_um = deal_grove_step(x0_cm * 1e4, time_s / 60.0,
+                                          temp_k - 273.15, wet);
+  const double dx_ox = x_new_um * 1e-4 - x0_cm;  // grown oxide, cm
+
+  if (dx_ox <= 0) {
+    if (log)
+      *log << "[oxidize] " << (wet ? "wet " : "dry ") << fmt("%.6g", temp_k)
+           << " K " << fmt("%.6g", time_s) << " s: no growth, tox="
+           << fmt("%.4g", x_new_um) << " um\n";
+    st.last_temp = temp_k;
+    return x_new_um * 1e-4;
+  }
+
+  // (d) Volume bookkeeping and shape realization.
+  const double dx_si = 0.44 * dx_ox;
+  const double rise = 0.56 * dx_ox;
+  const auto [nx0, ny0, nz0] = infer_box_dims(st.mesh);
+  const double base_lz = bb0.hi.z - bb0.lo.z;
+  const double h = base_lz / std::max(1, nz0);
+  const int nz_add = std::max(1, static_cast<int>(std::round(rise / h)));
+  Mesh ext = extend_mesh_exact(st.mesh, rise, nz_add);
+
+  // (e) Retag: new Si/SiO2 interface height.
+  const double z_if = z_si_top - dx_si;
+  int ox_tag = -1;
+  for (const auto& [t, m] : st.region_material)
+    if (t >= 1000 && is_oxide(m)) { ox_tag = t; break; }
+  if (ox_tag < 0) {
+    const auto etags = st.mesh.region_tags();
+    const int max_tag = etags.empty() ? 0
+        : *std::max_element(etags.begin(), etags.end());
+    ox_tag = max_tag + 3000;
+  }
+  st.region_material[ox_tag] = "oxide";
+
+  const int nc_ext = static_cast<int>(ext.cells.size());
+  ext.cell_region.resize(nc_ext, 0);
+  for (int ci = 0; ci < nc_ext; ++ci) {
+    const Vec3& c = ext.cell_cent[ci];
+    if (c.z > z_if) {
+      ext.cell_region[ci] = ox_tag;
+    } else {
+      // Nearest-centroid lookup of the old mesh's region tag.
+      double best = 1e300;
+      int best_j = 0;
+      const int nc_old = static_cast<int>(st.mesh.cells.size());
+      for (int j = 0; j < nc_old; ++j) {
+        const Vec3& oc = st.mesh.cell_cent[j];
+        const double dx = c.x - oc.x, dy = c.y - oc.y, dz = c.z - oc.z;
+        const double d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; best_j = j; }
+      }
+      ext.cell_region[ci] = st.mesh.cell_region[best_j];
+    }
+  }
+
+  // (f) Field transfer: nearest-centroid, then zero dopants above the old
+  // outer surface and keep the Si->SiO2 converted band frozen.
+  for (auto& [sym, conc] : st.fields) {
+    std::vector<double> new_conc(nc_ext, 0.0);
+    for (int ci = 0; ci < nc_ext; ++ci) {
+      const Vec3& cc = ext.cell_cent[ci];
+      double best = 1e300;
+      int best_j = 0;
+      const int nc_old = static_cast<int>(st.mesh.cells.size());
+      for (int j = 0; j < nc_old; ++j) {
+        const Vec3& oc = st.mesh.cell_cent[j];
+        const double dx = cc.x - oc.x, dy = cc.y - oc.y, dz = cc.z - oc.z;
+        const double d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; best_j = j; }
+      }
+      double v = conc[best_j];
+      if (cc.z > z_si_top + x0_cm) v = 0.0;  // new cell above the old top
+      new_conc[ci] = v;
+    }
+    conc = std::move(new_conc);
+  }
+
+  st.mesh = std::move(ext);
+
+  // (h) Quality repair (extend_mesh_exact yields a regular box mesh, so this
+  // is normally a no-op, but call it for future-proofing).
+  std::vector<std::vector<double>*> field_ptrs;
+  for (auto& [sym, conc] : st.fields) field_ptrs.push_back(&conc);
+  const RepairResult rr = repair_quality(st.mesh, &field_ptrs, 0.1);
+
+  // (i)
+  st.last_temp = temp_k;
+
+  if (log)
+    *log << "[oxidize] " << (wet ? "wet " : "dry ") << fmt("%.6g", temp_k)
+         << " K " << fmt("%.6g", time_s) << " s: tox " << fmt("%.4g", x0_cm * 1e4)
+         << " -> " << fmt("%.4g", x_new_um) << " um (dSi="
+         << fmt("%.4g", dx_si * 1e4) << " um, rise=" << fmt("%.4g", rise * 1e4)
+         << " um), mesh now " << st.mesh.cells.size() << " tets, min_q="
+         << fmt("%.4g", rr.min_q_after) << "\n";
+
+  return x_new_um * 1e-4;
 }
 
 void add_bc(SimState& st, const std::string& species, int patch, double conc,

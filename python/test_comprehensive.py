@@ -254,6 +254,44 @@ def test_etch_polygon():
     check(q_right > 0,   "etch_polygon: right (outside polygon) intact")
 
 
+def test_oxidize_dry():
+    """oxidize() grows SiO2, raises the surface, logs [oxidize]."""
+    print("test_oxidize_dry")
+    sim = cp.Simulation()
+    sim.mesh(x=0.2, y=0.2, z=0.5, nx=4, ny=4, nz=50)
+    sim.region("silicon")
+    sim.init("B", 1e18)
+    z_before = float(sim.cell_centroids[:, 2].max())
+    sim.oxidize(60, 1000)
+    z_after = float(sim.cell_centroids[:, 2].max())
+    rise = z_after - z_before
+    expected_rise = 0.56 * 0.0540
+    print(f"  rise={rise:.5g} um, expected={expected_rise:.5g} um")
+    check(z_after > z_before, "oxidize: surface rises above old top")
+    check(abs(rise - expected_rise) <= 0.5 * expected_rise,
+          "oxidize: rise close to 0.56*dx_ox (dry, 1000C, 60min)")
+    check("[oxidize]" in sim.log, "oxidize: log contains [oxidize]")
+
+
+def test_oxidize_wet_faster():
+    """wet oxidation grows a thicker oxide than dry for the same time/temp."""
+    print("test_oxidize_wet_faster")
+    sim_dry = cp.Simulation()
+    sim_dry.mesh(x=0.2, y=0.2, z=0.5, nx=4, ny=4, nz=50)
+    sim_dry.region("silicon")
+    sim_dry.oxidize(60, 1000, wet=False)
+    z_dry = float(sim_dry.cell_centroids[:, 2].max())
+
+    sim_wet = cp.Simulation()
+    sim_wet.mesh(x=0.2, y=0.2, z=0.5, nx=4, ny=4, nz=50)
+    sim_wet.region("silicon")
+    sim_wet.oxidize(60, 1000, wet=True)
+    z_wet = float(sim_wet.cell_centroids[:, 2].max())
+
+    print(f"  z_dry={z_dry:.5g} z_wet={z_wet:.5g}")
+    check(z_wet > z_dry, "oxidize: wet grows a thicker oxide than dry")
+
+
 def _spread(sim, species):
     """Mass-weighted standard deviation of a profile along z (micrometres)."""
     c = sim.field(species)
@@ -472,6 +510,8 @@ if __name__ == "__main__":
     test_deposit_blanket()
     test_etch_blanket()
     test_etch_polygon()
+    test_oxidize_dry()
+    test_oxidize_wet_faster()
     test_ted_enhancement()
     test_ted_interstitial_field()
     test_error_paths()

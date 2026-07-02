@@ -49,6 +49,7 @@ struct SimState {
 //   strip                             strip all remaining photoresist
 //   bc species=P patch=zmax conc=1e20 | bc clear
 //   diffuse time=30min temp=1000C [dt=30s] [fieldenh=on|off] [nonortho=on|off]
+//   oxidize time=30min temp=1000C [ambient=dry|wet]
 //   save [file=out.vtu]
 //   print
 //   stop

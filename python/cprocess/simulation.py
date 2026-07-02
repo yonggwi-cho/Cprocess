@@ -210,6 +210,17 @@ class Simulation:
         self._emit(_c.proc_etch(self._st, depth * UM, poly_cm))
         return self
 
+    def oxidize(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
+        """Blanket thermal oxidation of the exposed silicon top surface.
+
+        time in minutes, temp in Celsius. Grows SiO2 per Deal-Grove
+        (<100> Si); the surface rises by 0.56x and silicon is consumed
+        by 0.44x of the grown oxide thickness.
+        """
+        self._emit(_c.proc_oxidize(self._st, time * MIN,
+                                   _celsius_to_k(temp), bool(wet)))
+        return self
+
     def strip(self) -> "Simulation":
         """Remove all remaining photoresist."""
         self._emit(_c.proc_strip(self._st))

@@ -230,6 +230,15 @@ void cmd_diffuse(SimState& st, const Cmd& c, std::ostream& log) {
     proc::diffuse(st, o, &log);
 }
 
+void cmd_oxidize(SimState& st, const Cmd& c, std::ostream& log) {
+  const double time_s = c.num("time", Unit::time);
+  const double temp_k = c.num("temp", Unit::temp);
+  std::string ambient = c.has("ambient") ? lower(c.str("ambient")) : "dry";
+  if (ambient != "dry" && ambient != "wet")
+    c.fail("ambient must be 'dry' or 'wet'");
+  proc::oxidize(st, time_s, temp_k, ambient == "wet", &log);
+}
+
 void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
   proc::save(st, c.has("file") ? c.str("file") : "out.vtu", &log);
 }
@@ -289,6 +298,7 @@ void run_deck(std::istream& in, SimState& st, std::ostream& log) {
     else if (c.name == "strip") cmd_strip(st, c, log);
     else if (c.name == "bc") cmd_bc(st, c, log);
     else if (c.name == "diffuse") cmd_diffuse(st, c, log);
+    else if (c.name == "oxidize") cmd_oxidize(st, c, log);
     else if (c.name == "save") cmd_save(st, c, log);
     else if (c.name == "print") cmd_print(st, c, log);
     else if (c.name == "stop") break;

@@ -98,6 +98,13 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log = nullptr)
 void diffuse_ted(SimState& st, const DiffuseOpts& opts,
                  std::ostream* log = nullptr);
 
+// Blanket 1D vertical thermal oxidation of the exposed top surface.
+// time_s in seconds, temp_k in K. Grows/extends the SiO2 layer above the
+// silicon per Deal-Grove; consumes 0.44*dx_ox of Si and raises the outer
+// surface by 0.56*dx_ox. Returns the new total oxide thickness in cm.
+double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
+               std::ostream* log = nullptr);
+
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
 }  // namespace proc
