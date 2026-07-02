@@ -14,6 +14,38 @@ namespace {
 const double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 
+double temp_at(const DiffuseOpts& o, double t) {
+  if (o.temp_profile.empty()) return o.temp;
+  const auto& p = o.temp_profile;
+  if (t <= p.front().first) return p.front().second;
+  if (t >= p.back().first) return p.back().second;
+  for (std::size_t i = 1; i < p.size(); ++i) {
+    if (t <= p[i].first) {
+      const double t0 = p[i - 1].first, t1 = p[i].first;
+      const double T0 = p[i - 1].second, T1 = p[i].second;
+      const double f = (t1 > t0) ? (t - t0) / (t1 - t0) : 0.0;
+      return T0 + f * (T1 - T0);
+    }
+  }
+  return p.back().second;
+}
+
+namespace {
+void validate_profile(const DiffuseOpts& o) {
+  if (o.temp_profile.empty()) return;
+  if (o.temp_profile.size() < 2)
+    throw std::runtime_error("diffuse: bad temp_profile");
+  if (o.temp_profile[0].first != 0.0)
+    throw std::runtime_error("diffuse: bad temp_profile");
+  for (std::size_t i = 0; i < o.temp_profile.size(); ++i) {
+    if (o.temp_profile[i].second <= 0)
+      throw std::runtime_error("diffuse: bad temp_profile");
+    if (i > 0 && !(o.temp_profile[i].first > o.temp_profile[i - 1].first))
+      throw std::runtime_error("diffuse: bad temp_profile");
+  }
+}
+}  // namespace
+
 DiffusionSolver::DiffusionSolver(const Mesh& mesh, std::vector<char> solve_mask,
                                  std::ostream* log, std::vector<int> cell_mat)
     : mesh_(mesh), mask_(std::move(solve_mask)), log_(log) {
@@ -387,9 +419,9 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
               return a.dopant->symbol < b.dopant->symbol;
             });
 
+  validate_profile(o);
   const double dt0 = (o.dt > 0) ? std::min(o.dt, o.time) : o.time / 50.0;
-  const int nsteps = static_cast<int>(std::ceil(o.time / dt0 - 1e-12));
-  const double ni = ni_si(o.temp);
+  const int nsteps_est = static_cast<int>(std::ceil(o.time / dt0 - 1e-12));
 
   // Per-species Dirichlet value per boundary face (NaN = no condition).
   std::vector<std::vector<double>> bcface(ns, std::vector<double>(nf, kNaN));
@@ -412,8 +444,14 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
   std::vector<Vec3> grad;
 
   double t = 0;
-  for (int step = 0; step < nsteps; ++step) {
-    const double dt = std::min(dt0, o.time - t);
+  int step = 0;
+  const int every = std::max(1, nsteps_est / 10);
+  while (t < o.time - 1e-12 * o.time) {
+    double dt = std::min(dt0, o.time - t);
+    for (const auto& [tb, Tb] : o.temp_profile)
+      if (tb > t + 1e-12 * o.time && tb - t < dt) dt = tb - t;
+    const double T = temp_at(o, t + 0.5 * dt);
+    const double ni = ni_si(T);
     for (int s = 0; s < ns; ++s) cold[s] = *fields[s].conc;
 
     double cmax = 0;
@@ -431,7 +469,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         double nnet = 0;
         for (int s = 0; s < ns; ++s) {
           double c = (*fields[s].conc)[i];
-          if (o.activation) c = active_concentration(*fields[s].dopant, c, o.temp);
+          if (o.activation) c = active_concentration(*fields[s].dopant, c, T);
           nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
         }
         const double cc = nnet / (2.0 * ni);
@@ -446,10 +484,10 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
           if (!mask_[i]) { dcell[s][i] = 0; continue; }
           if (mat_[i] != kMatSi) {
             dcell[s][i] = material_diffusivity(dp, static_cast<MatId>(mat_[i]),
-                                               o.temp, 1.0);
+                                               T, 1.0);
             continue;
           }
-          double dv = dopant_diffusivity(dp, o.temp, nni[i]);
+          double dv = dopant_diffusivity(dp, T, nni[i]);
           if (o.field_enh) {
             const bool ntype = nni[i] >= 1.0;
             if ((dp.type == DopType::donor && ntype) ||
@@ -466,7 +504,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
       for (int s = 0; s < ns; ++s) {
         const Dopant& dp = *fields[s].dopant;
         std::vector<double>& c = *fields[s].conc;
-        const SegTable seg = make_seg_table(dp, o.temp, has_segregation_);
+        const SegTable seg = make_seg_table(dp, T, has_segregation_);
         assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
                  rhs, grad);
 
@@ -508,17 +546,14 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
       for (double& v : *fields[s].conc) v = std::max(v, 0.0);
 
     t += dt;
-    if (o.verbosity >= 1 && log_) {
-      const int every = std::max(1, nsteps / 10);
-      if (step % every == 0 || step == nsteps - 1) {
-        char buf[160];
-        std::snprintf(buf, sizeof(buf),
-                      "[diffuse]   step %4d/%d  t=%.4g s  picard=%d  cg=%d\n",
-                      step + 1, nsteps, t, std::min(picard, o.max_picard),
-                      lin_iters);
-        *log_ << buf;
-      }
+    if (log_ && (o.verbosity >= 2 || (o.verbosity == 1 && step % every == 0))) {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf),
+                    "[diffuse]   step %4d  t=%.6g s  T=%.5g K  picard=%d  cg=%d\n",
+                    step + 1, t, T, std::min(picard, o.max_picard), lin_iters);
+      *log_ << buf;
     }
+    ++step;
   }
 
   if (log_ && o.verbosity >= 1) {
@@ -561,14 +596,9 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
               return a.dopant->symbol < b.dopant->symbol;
             });
 
+  validate_profile(o);
   const double dt0 = (o.dt > 0) ? std::min(o.dt, o.time) : o.time / 50.0;
-  const int nsteps = static_cast<int>(std::ceil(o.time / dt0 - 1e-12));
-  const double ni = ni_si(o.temp);
-
-  // Interstitial parameters (isothermal, spatially uniform).
-  const double cstar = interstitial_cstar(o.temp);
-  const double d_I = interstitial_diffusivity(o.temp);
-  const double k_rec = interstitial_recomb_rate(o.temp);
+  const int nsteps_est = static_cast<int>(std::ceil(o.time / dt0 - 1e-12));
 
   // Per-species Dirichlet value per boundary face (NaN = none).
   std::vector<std::vector<double>> bcface(ns, std::vector<double>(nf, kNaN));
@@ -591,10 +621,11 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
         mesh_.faces[fi].neigh < 0)
       psi_bcface[fi] = 0.0;
 
-  // Interstitial diffusivity is constant in silicon, zero elsewhere (the
-  // point-defect model is Si-only; P1-9 gates it to mat_ == kMatSi).
+  // Interstitial diffusivity is constant in silicon (at the current step's
+  // temperature), zero elsewhere (the point-defect model is Si-only; P1-9
+  // gates it to mat_ == kMatSi). Values are recomputed every step under a
+  // temperature ramp; the vector itself is allocated once.
   std::vector<double> dI(nc, 0.0);
-  for (int i = 0; i < nc; ++i) dI[i] = (mat_[i] == kMatSi) ? d_I : 0.0;
 
   std::vector<double> mass0(ns, 0.0);
   for (int s = 0; s < ns; ++s)
@@ -606,11 +637,23 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
   std::vector<Vec3> grad;
 
   double t = 0, s_peak0 = 0;
+  const double cstar0 = interstitial_cstar(temp_at(o, 0.0));
   for (int i = 0; i < nc; ++i)
-    s_peak0 = std::max(s_peak0, 1.0 + psi[i] / cstar);
+    s_peak0 = std::max(s_peak0, 1.0 + psi[i] / cstar0);
 
-  for (int step = 0; step < nsteps; ++step) {
-    const double dt = std::min(dt0, o.time - t);
+  double cstar = cstar0;  // kept for the post-loop summary log
+  int step = 0;
+  const int every = std::max(1, nsteps_est / 10);
+  while (t < o.time - 1e-12 * o.time) {
+    double dt = std::min(dt0, o.time - t);
+    for (const auto& [tb, Tb] : o.temp_profile)
+      if (tb > t + 1e-12 * o.time && tb - t < dt) dt = tb - t;
+    const double T = temp_at(o, t + 0.5 * dt);
+    const double ni = ni_si(T);
+    cstar = interstitial_cstar(T);
+    const double d_I = interstitial_diffusivity(T);
+    const double k_rec = interstitial_recomb_rate(T);
+    for (int i = 0; i < nc; ++i) dI[i] = (mat_[i] == kMatSi) ? d_I : 0.0;
 
     // ── 1. Advance the interstitial excess one implicit step (linear). ──
     psi_old = psi;
@@ -648,7 +691,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
           double nnet = 0;
           for (int s = 0; s < ns; ++s) {
             double c = (*fields[s].conc)[i];
-            if (o.activation) c = active_concentration(*fields[s].dopant, c, o.temp);
+            if (o.activation) c = active_concentration(*fields[s].dopant, c, T);
             nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
           }
           const double cc = nnet / (2.0 * ni);
@@ -660,10 +703,10 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
             if (!mask_[i]) { dcell[s][i] = 0; continue; }
             if (mat_[i] != kMatSi) {
               dcell[s][i] = material_diffusivity(dp, static_cast<MatId>(mat_[i]),
-                                                 o.temp, 1.0);
+                                                 T, 1.0);
               continue;
             }
-            double dv = dopant_diffusivity(dp, o.temp, nni[i]);
+            double dv = dopant_diffusivity(dp, T, nni[i]);
             if (o.field_enh) {
               const bool ntype = nni[i] >= 1.0;
               if ((dp.type == DopType::donor && ntype) ||
@@ -683,7 +726,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
         for (int s = 0; s < ns; ++s) {
           const Dopant& dp = *fields[s].dopant;
           std::vector<double>& c = *fields[s].conc;
-          const SegTable seg = make_seg_table(dp, o.temp, has_segregation_);
+          const SegTable seg = make_seg_table(dp, T, has_segregation_);
           assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
                    rhs, grad);
           bool need_bicg = false;
@@ -714,16 +757,14 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
     }
 
     t += dt;
-    if (o.verbosity >= 1 && log_) {
-      const int every = std::max(1, nsteps / 10);
-      if (step % every == 0 || step == nsteps - 1) {
-        char buf[160];
-        std::snprintf(buf, sizeof(buf),
-                      "[ted]   step %4d/%d  t=%.4g s  Smax=%.3g\n",
-                      step + 1, nsteps, t, smax);
-        *log_ << buf;
-      }
+    if (log_ && (o.verbosity >= 2 || (o.verbosity == 1 && step % every == 0))) {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf),
+                    "[ted]   step %4d  t=%.6g s  T=%.5g K  Smax=%.3g\n",
+                    step + 1, t, T, smax);
+      *log_ << buf;
     }
+    ++step;
   }
 
   if (log_ && o.verbosity >= 1) {

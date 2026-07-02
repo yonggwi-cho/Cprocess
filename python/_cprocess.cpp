@@ -283,7 +283,9 @@ PYBIND11_MODULE(_cprocess, m) {
       .def_readwrite("nonortho",  &DiffuseOpts::nonortho,  "Non-orthogonal correction")
       .def_readwrite("verbosity", &DiffuseOpts::verbosity)
       .def_readwrite("activation", &DiffuseOpts::activation,
-          "Solid-solubility clamp on charge neutrality");
+          "Solid-solubility clamp on charge neutrality")
+      .def_readwrite("temp_profile", &DiffuseOpts::temp_profile,
+          "Piecewise-linear T profile [(t_s, T_K), ...]; empty = isothermal");
 
   py::class_<DirichletBC>(m, "DirichletBC",
       "Fixed-concentration (Dirichlet) boundary condition.")

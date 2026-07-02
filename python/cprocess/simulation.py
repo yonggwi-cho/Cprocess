@@ -239,10 +239,10 @@ class Simulation:
         _c.proc_clear_bc(self._st)
         return self
 
-    def diffuse(self, time: float, temp: float, *,
+    def diffuse(self, time: float, temp: float = None, *,
                 dt: float = 0.0, field_enh: bool = True,
                 nonortho: bool = True, ted: bool = False,
-                activation: bool = True) -> "Simulation":
+                activation: bool = True, ramp=None) -> "Simulation":
         """Anneal: `time` in minutes, `temp` in Celsius, `dt` in minutes.
 
         `ted=True` enables transient enhanced diffusion, coupling the excess
@@ -253,10 +253,23 @@ class Simulation:
         `activation=True` (default) clamps the concentration entering charge
         neutrality (and hence field enhancement) at the solid solubility
         C_ss(T); set False to treat the full concentration as active.
+
+        `ramp`, if given, is a piecewise-linear RTA temperature profile
+        `[(t_min, T_celsius), ...]` with `ramp[0][0] == 0`. When `ramp` is
+        given, `temp` is ignored (the profile's first point sets the initial
+        temperature); one of `temp` or `ramp` must be given.
         """
         opts = _c.DiffuseOpts()
         opts.time = time * MIN
-        opts.temp = _celsius_to_k(temp)
+        if ramp is not None:
+            if ramp[0][0] != 0:
+                raise ValueError("ramp must start at t=0")
+            opts.temp_profile = [(t * MIN, _celsius_to_k(T)) for t, T in ramp]
+            opts.temp = _celsius_to_k(ramp[0][1])
+        elif temp is not None:
+            opts.temp = _celsius_to_k(temp)
+        else:
+            raise ValueError("give temp or ramp")
         opts.dt = dt * MIN
         opts.field_enh = field_enh
         opts.nonortho = nonortho

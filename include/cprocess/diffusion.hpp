@@ -30,7 +30,15 @@ struct DiffuseOpts {
   int lin_maxit = 2000;
   int verbosity = 1;       // 0 silent, 1 per-step lines
   bool activation = true;  // clamp charge neutrality at solid solubility (P1-3)
+
+  // Piecewise-linear temperature profile {time_s from step start, temp_K}.
+  // Empty = isothermal at `temp`. Must be sorted, start at t=0, size >= 2.
+  // Beyond the last breakpoint the last temperature is held.
+  std::vector<std::pair<double, double>> temp_profile;
 };
+
+// T(t) [K]: linear interpolation of opts.temp_profile; opts.temp if empty.
+double temp_at(const DiffuseOpts& opts, double t);
 
 struct SpeciesField {
   const Dopant* dopant = nullptr;

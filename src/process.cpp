@@ -714,14 +714,24 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     return;
   }
   if (log) {
-    *log << "[diffuse] T=" << fmt("%.5g", opts.temp) << " K, time="
-         << fmt("%.5g", opts.time) << " s, species:";
+    *log << "[diffuse] T=";
+    if (opts.temp_profile.empty()) {
+      *log << fmt("%.5g", opts.temp) << " K";
+    } else {
+      *log << "ramp(";
+      for (std::size_t i = 0; i < opts.temp_profile.size(); ++i) {
+        if (i) *log << "->";
+        *log << fmt("%.5g", opts.temp_profile[i].second);
+      }
+      *log << " K)";
+    }
+    *log << ", time=" << fmt("%.5g", opts.time) << " s, species:";
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
   solver.run(fields, st.bcs, opts);
-  st.last_temp = opts.temp;
+  st.last_temp = temp_at(opts, opts.time);
 }
 
 void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
@@ -740,14 +750,24 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   auto& psi = st.fields["I"];
   psi.resize(st.mesh.cells.size(), 0.0);
   if (log) {
-    *log << "[ted] T=" << fmt("%.5g", opts.temp) << " K, time="
-         << fmt("%.5g", opts.time) << " s, species:";
+    *log << "[ted] T=";
+    if (opts.temp_profile.empty()) {
+      *log << fmt("%.5g", opts.temp) << " K";
+    } else {
+      *log << "ramp(";
+      for (std::size_t i = 0; i < opts.temp_profile.size(); ++i) {
+        if (i) *log << "->";
+        *log << fmt("%.5g", opts.temp_profile[i].second);
+      }
+      *log << " K)";
+    }
+    *log << ", time=" << fmt("%.5g", opts.time) << " s, species:";
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
   solver.run_ted(fields, psi, st.bcs, opts);
-  st.last_temp = opts.temp;
+  st.last_temp = temp_at(opts, opts.time);
 }
 
 void save(SimState& st, const std::string& path, std::ostream* log) {

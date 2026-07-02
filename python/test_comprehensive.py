@@ -604,6 +604,50 @@ def test_activation_python():
 
 
 # ---------------------------------------------------------------------------
+def test_rta_ramp_python():
+    """Simulation.diffuse(ramp=...) runs a piecewise-linear RTA temperature
+    profile and validates the ramp[0][0] == 0 / temp-or-ramp requirements."""
+    print("test_rta_ramp_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim.region("silicon")
+    sim.implant("B", dose=1e14, rp=0.05, drp=0.02)
+    dose0 = sim.dose("B")
+    sim.diffuse(time=2, ramp=[(0, 900), (1, 1050), (2, 900)])
+    dose1 = sim.dose("B")
+    check(np.isfinite(dose1) and dose1 > 0, "ramp anneal leaves a finite, positive dose")
+    check(abs(dose1 - dose0) / dose0 < 1e-4, "ramp anneal conserves dose (< 1e-4 rel change)")
+
+    sim_bad = cp.Simulation()
+    sim_bad.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim_bad.region("silicon")
+    sim_bad.implant("B", dose=1e14, rp=0.05, drp=0.02)
+    try:
+        sim_bad.diffuse(time=2, ramp=[(0.5, 900), (2, 900)])
+        raise AssertionError("ramp not starting at t=0 should raise ValueError")
+    except ValueError:
+        check(True, "ramp[0][0] != 0 raises ValueError")
+
+    sim_none = cp.Simulation()
+    sim_none.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim_none.region("silicon")
+    sim_none.implant("B", dose=1e14, rp=0.05, drp=0.02)
+    try:
+        sim_none.diffuse(time=2)
+        raise AssertionError("diffuse() with neither temp nor ramp should raise ValueError")
+    except ValueError:
+        check(True, "no temp and no ramp raises ValueError")
+
+    # Legacy API still works.
+    sim_legacy = cp.Simulation()
+    sim_legacy.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim_legacy.region("silicon")
+    sim_legacy.implant("B", dose=1e14, rp=0.05, drp=0.02)
+    sim_legacy.diffuse(time=1, temp=1000)
+    check(np.all(np.isfinite(sim_legacy.field("B"))), "legacy diffuse(time, temp) still works")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -630,4 +674,5 @@ if __name__ == "__main__":
     test_segregation_dose_loss()
     test_nitride_barrier_python()
     test_activation_python()
+    test_rta_ramp_python()
     print("\nall comprehensive Simulation tests passed")
