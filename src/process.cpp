@@ -762,11 +762,10 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
   for (const auto& [sym, conc] : st.fields) {
     const Dopant* d = find_dopant(sym);
     if (!d) continue;
-    const double css = solid_solubility(*d, st.last_temp);
     extra.emplace_back(nc, 0.0);
     auto& act = extra.back();
     for (std::size_t i = 0; i < nc; ++i) {
-      act[i] = (css > 0) ? std::min(conc[i], css) : conc[i];
+      act[i] = active_concentration(*d, conc[i], st.last_temp);
       net[i] += (d->type == DopType::donor) ? act[i] : -act[i];
     }
   }
@@ -783,6 +782,23 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
       {"Region", &region}};
   write_vtu(path, st.mesh, scalars, ints);
   if (log) *log << "[save] wrote " << path << "\n";
+}
+
+std::vector<double> active_field(const SimState& st, const std::string& species,
+                                 double temp_k, std::ostream* log) {
+  const Dopant* d = dopant_or_throw(species);
+  auto it = st.fields.find(d->symbol);
+  if (it == st.fields.end())
+    throw std::runtime_error("no field: " + species);
+  const double t_k = (temp_k > 0) ? temp_k : st.last_temp;
+  const auto& conc = it->second;
+  std::vector<double> act(conc.size());
+  for (std::size_t i = 0; i < conc.size(); ++i)
+    act[i] = active_concentration(*d, conc[i], t_k);
+  if (log)
+    *log << "[active] " << d->symbol << ": C_ss(T)=" << solid_solubility(*d, t_k)
+         << " cm^-3\n";
+  return act;
 }
 
 }  // namespace proc

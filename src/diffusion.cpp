@@ -430,7 +430,8 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
         double nnet = 0;
         for (int s = 0; s < ns; ++s) {
-          const double c = (*fields[s].conc)[i];
+          double c = (*fields[s].conc)[i];
+          if (o.activation) c = active_concentration(*fields[s].dopant, c, o.temp);
           nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
         }
         const double cc = nnet / (2.0 * ni);
@@ -646,7 +647,8 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
           if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
           double nnet = 0;
           for (int s = 0; s < ns; ++s) {
-            const double c = (*fields[s].conc)[i];
+            double c = (*fields[s].conc)[i];
+            if (o.activation) c = active_concentration(*fields[s].dopant, c, o.temp);
             nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
           }
           const double cc = nnet / (2.0 * ni);

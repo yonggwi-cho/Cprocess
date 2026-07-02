@@ -576,6 +576,34 @@ def test_nitride_barrier_python():
 
 
 # ---------------------------------------------------------------------------
+def test_activation_python():
+    """Simulation.active() clamps at the solid solubility; activation=False
+    still runs without error."""
+    print("test_activation_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim.region("silicon")
+    sim.implant("As", dose=3e15, rp=0.05, drp=0.02)
+    sim.diffuse(time=30, temp=900)
+
+    a = sim.active("As")
+    f = sim.field("As")
+    check(np.all(a <= f + 1e-30), "active <= field everywhere")
+    check(a.max() <= 1.91e20, "active clamped near C_ss(900 C)")
+
+    a1000 = sim.active("As", temp=1000)
+    check(a1000.max() <= 3.18e20, "active(1000C) <= C_ss(1000C)")
+    check(a1000.max() > 1.9e20, "active(1000C) > C_ss(900C): temperature dependence")
+
+    sim2 = cp.Simulation()
+    sim2.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim2.region("silicon")
+    sim2.implant("As", dose=3e15, rp=0.05, drp=0.02)
+    sim2.diffuse(time=30, temp=900, activation=False)  # must not raise
+    check(np.all(np.isfinite(sim2.field("As"))), "activation=False runs fine")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -601,4 +629,5 @@ if __name__ == "__main__":
     test_save_and_fields()
     test_segregation_dose_loss()
     test_nitride_barrier_python()
+    test_activation_python()
     print("\nall comprehensive Simulation tests passed")

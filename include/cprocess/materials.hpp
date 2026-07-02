@@ -72,6 +72,10 @@ double dopant_diffusivity(const Dopant& d, double temp_k, double n_over_ni);
 // Approximate solid solubility (electrically active limit) [cm^-3].
 double solid_solubility(const Dopant& d, double temp_k);
 
+// Electrically active concentration: solid-solubility clamp.
+//   C_act = min(C, C_ss(T));  C_ss == 0 (no fit) means "no clamp".
+double active_concentration(const Dopant& d, double conc, double temp_k);
+
 // ── Self-interstitial point-defect model (for transient enhanced diffusion) ──
 // All values are order-of-magnitude literature fits for silicon; they set the
 // TED time-scale and magnitude and can be tuned. Isothermal, spatially uniform.

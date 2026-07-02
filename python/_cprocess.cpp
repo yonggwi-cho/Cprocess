@@ -281,7 +281,9 @@ PYBIND11_MODULE(_cprocess, m) {
       .def_readwrite("dt",        &DiffuseOpts::dt,        "Time step [s] (0=auto)")
       .def_readwrite("field_enh", &DiffuseOpts::field_enh, "Electric-field drift")
       .def_readwrite("nonortho",  &DiffuseOpts::nonortho,  "Non-orthogonal correction")
-      .def_readwrite("verbosity", &DiffuseOpts::verbosity);
+      .def_readwrite("verbosity", &DiffuseOpts::verbosity)
+      .def_readwrite("activation", &DiffuseOpts::activation,
+          "Solid-solubility clamp on charge neutrality");
 
   py::class_<DirichletBC>(m, "DirichletBC",
       "Fixed-concentration (Dirichlet) boundary condition.")
@@ -548,6 +550,14 @@ PYBIND11_MODULE(_cprocess, m) {
         return log.str();
       },
       py::arg("state"), py::arg("path"));
+
+  m.def("proc_active_field",
+      [](const SimState& st, const std::string& species, double temp_k) {
+        return vec_to_np(proc::active_field(st, species, temp_k, nullptr));
+      },
+      py::arg("state"), py::arg("species"), py::arg("temp_k") = -1.0,
+      "Per-cell electrically active concentration [cm^-3] (solid-solubility "
+      "clamp); temp_k<=0 uses the last diffuse temperature.");
 
   m.def("find_patch",
       [](const SimState& st, const std::string& name) {

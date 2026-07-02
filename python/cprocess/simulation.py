@@ -241,13 +241,18 @@ class Simulation:
 
     def diffuse(self, time: float, temp: float, *,
                 dt: float = 0.0, field_enh: bool = True,
-                nonortho: bool = True, ted: bool = False) -> "Simulation":
+                nonortho: bool = True, ted: bool = False,
+                activation: bool = True) -> "Simulation":
         """Anneal: `time` in minutes, `temp` in Celsius, `dt` in minutes.
 
         `ted=True` enables transient enhanced diffusion, coupling the excess
         self-interstitials seeded by implant(damage=True) into the dopant
         diffusivity. The enhancement decays as interstitials reach the surface
         sink and recombine, reproducing the initial fast-diffusion transient.
+
+        `activation=True` (default) clamps the concentration entering charge
+        neutrality (and hence field enhancement) at the solid solubility
+        C_ss(T); set False to treat the full concentration as active.
         """
         opts = _c.DiffuseOpts()
         opts.time = time * MIN
@@ -256,6 +261,7 @@ class Simulation:
         opts.field_enh = field_enh
         opts.nonortho = nonortho
         opts.verbosity = 1 if self.verbose else 0
+        opts.activation = activation
         if ted:
             self._emit(_c.proc_diffuse_ted(self._st, opts))
         else:
@@ -297,6 +303,14 @@ class Simulation:
     def field(self, species: str) -> np.ndarray:
         """Concentration field [cm^-3], shape (n_cells,)."""
         return self._st.get_field(species)
+
+    def active(self, species: str, temp: float = None) -> np.ndarray:
+        """Electrically active concentration [cm^-3] (solid-solubility clamp).
+
+        temp in Celsius; None uses the temperature of the last diffuse step.
+        """
+        t_k = -1.0 if temp is None else _celsius_to_k(temp)
+        return _c.proc_active_field(self._st, species, t_k)
 
     def set_field(self, species: str, conc: np.ndarray) -> "Simulation":
         self._st.set_field(species, np.asarray(conc, dtype=float))

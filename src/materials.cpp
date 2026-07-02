@@ -100,6 +100,11 @@ double solid_solubility(const Dopant& d, double temp_k) {
   return d.ss_pre * std::exp(-d.ss_e / (kBoltzmannEv * temp_k));
 }
 
+double active_concentration(const Dopant& d, double conc, double temp_k) {
+  const double css = solid_solubility(d, temp_k);
+  return (css > 0) ? std::min(conc, css) : conc;
+}
+
 // Self-interstitial equilibrium concentration. Arrhenius fit giving ~1e13 cm^-3
 // at 1000 C, rising toward ~1e15 near the melting point (cf. Bracht et al.).
 double interstitial_cstar(double temp_k) {

@@ -29,6 +29,7 @@ struct DiffuseOpts {
   double lin_rtol = 1e-10;
   int lin_maxit = 2000;
   int verbosity = 1;       // 0 silent, 1 per-step lines
+  bool activation = true;  // clamp charge neutrality at solid solubility (P1-3)
 };
 
 struct SpeciesField {

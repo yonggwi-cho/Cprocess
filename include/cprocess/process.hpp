@@ -107,5 +107,11 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
 
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
+// Per-cell electrically active concentration of `species` at temp_k [K]
+// (solid-solubility clamp, P1-3). temp_k <= 0 selects st.last_temp. Throws if
+// the field does not exist.
+std::vector<double> active_field(const SimState& st, const std::string& species,
+                                 double temp_k = -1.0, std::ostream* log = nullptr);
+
 }  // namespace proc
 }  // namespace cp
