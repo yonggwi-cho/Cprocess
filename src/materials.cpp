@@ -29,7 +29,8 @@ const std::vector<Dopant> kDopants = {
       {50, 161 * NM, 50 * NM}, {80, 243 * NM, 63 * NM}, {100, 299 * NM, 71 * NM},
       {150, 420 * NM, 85 * NM}, {200, 531 * NM, 94 * NM}},
      /*seg_m0,seg_e*/ 6.0, 0.33, /*seg_h0,seg_he*/ 1.0e5, 2.0,
-     /*dox0,eox*/ 1.23e-4, 3.39},
+     /*dox0,eox*/ 1.23e-4, 3.39,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 7.6, 3.46},
     {"phosphorus", "P", DopType::donor, 15, 30.974,
      3.85, 3.66, 4.44, 4.00, 44.2, 4.37, 0, 0,
      2.45e23, 0.62, /*fi*/ 1.0,
@@ -37,7 +38,8 @@ const std::vector<Dopant> kDopants = {
       {50, 68 * NM, 29 * NM}, {80, 101 * NM, 40 * NM}, {100, 124 * NM, 45 * NM},
       {150, 190 * NM, 62 * NM}, {200, 254 * NM, 78 * NM}},
      /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
-     /*dox0,eox*/ 0.19, 4.03},
+     /*dox0,eox*/ 0.19, 4.03,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 40.0, 3.66},
     {"arsenic", "As", DopType::donor, 33, 74.922,
      0.066, 3.44, 12.0, 4.05, 0, 0, 0, 0,
      1.3e23, 0.66, /*fi*/ 0.4,
@@ -45,17 +47,28 @@ const std::vector<Dopant> kDopants = {
       {50, 34 * NM, 13 * NM}, {80, 48 * NM, 18 * NM}, {100, 58 * NM, 21 * NM},
       {150, 85 * NM, 30 * NM}, {200, 110 * NM, 37 * NM}},
      /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
-     /*dox0,eox*/ 3.7e-2, 3.70},
+     /*dox0,eox*/ 3.7e-2, 3.70,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 1.1, 3.44},
     {"antimony", "Sb", DopType::donor, 51, 120.90,
      0.214, 3.65, 15.0, 4.08, 0, 0, 0, 0,
      3.8e21, 0.56, /*fi*/ 0.1,
      {{10, 9 * NM, 3 * NM}, {30, 21 * NM, 7 * NM}, {50, 31 * NM, 10 * NM},
       {100, 53 * NM, 17 * NM}, {200, 96 * NM, 29 * NM}},
      /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
-     /*dox0,eox*/ 2.6e-2, 4.00},
+     /*dox0,eox*/ 2.6e-2, 4.00,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 5.3, 3.65},
 };
 
 }  // namespace
+
+MatId material_id(const std::string& name) {
+  const std::string q = lower(name);
+  if (q == "silicon" || q == "si") return kMatSi;
+  if (q == "oxide" || q == "sio2") return kMatOxide;
+  if (q == "nitride" || q == "si3n4") return kMatNitride;
+  if (q == "poly" || q == "polysilicon") return kMatPoly;
+  return kMatGas;  // "gas" and anything unknown
+}
 
 const std::vector<Dopant>& dopant_table() { return kDopants; }
 
@@ -119,6 +132,25 @@ double segregation_h(const Dopant& d, double temp_k) {
 double oxide_diffusivity(const Dopant& d, double temp_k) {
   if (d.dox0 <= 0) return 0.0;
   return d.dox0 * std::exp(-d.eox / (kBoltzmannEv * temp_k));
+}
+
+double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
+                            double nni) {
+  switch (mat) {
+    case kMatSi:
+      return dopant_diffusivity(d, temp_k, nni);
+    case kMatOxide:
+      return oxide_diffusivity(d, temp_k);
+    case kMatNitride:
+      if (d.dnit0 <= 0) return 0.0;
+      return d.dnit0 * std::exp(-d.enit / (kBoltzmannEv * temp_k));
+    case kMatPoly:
+      if (d.dpoly0 <= 0) return 0.0;
+      return d.dpoly0 * std::exp(-d.epoly / (kBoltzmannEv * temp_k));
+    case kMatGas:
+    default:
+      return 0.0;
+  }
 }
 
 bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp) {

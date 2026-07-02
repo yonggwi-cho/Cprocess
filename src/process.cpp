@@ -131,17 +131,13 @@ std::vector<char> silicon_mask(const SimState& st) {
   return mask;
 }
 
-// 0 = silicon (or untagged), 1 = oxide/sio2, 2 = everything else
+// Full MatId per cell (Si/oxide/nitride/poly/gas); untagged cells are Si.
 std::vector<int> material_ids(const SimState& st) {
-  std::vector<int> mat(st.mesh.cells.size(), 0);
+  std::vector<int> mat(st.mesh.cells.size(), kMatSi);
   for (std::size_t i = 0; i < st.mesh.cells.size(); ++i) {
     auto it = st.region_material.find(st.mesh.cell_region[i]);
-    if (it == st.region_material.end() || is_silicon(it->second)) {
-      mat[i] = 0;
-    } else {
-      const std::string ml = lower(it->second);
-      mat[i] = (ml == "oxide" || ml == "sio2") ? 1 : 2;
-    }
+    mat[i] = (it == st.region_material.end()) ? static_cast<int>(kMatSi)
+                                              : static_cast<int>(material_id(it->second));
   }
   return mat;
 }

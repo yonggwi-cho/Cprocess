@@ -6,6 +6,7 @@
 #include <limits>
 #include <ostream>
 #include <stdexcept>
+#include <utility>
 
 namespace cp {
 
@@ -21,14 +22,17 @@ DiffusionSolver::DiffusionSolver(const Mesh& mesh, std::vector<char> solve_mask,
     if (static_cast<int>(cell_mat.size()) != nc)
       throw std::runtime_error("diffusion: cell_mat size mismatch");
     mat_ = std::move(cell_mat);
+    // cell_mat values are MatId (0 Si .. 4 gas). No remaining caller passes
+    // the legacy P1-4 raw "2 = other/frozen" convention; process.cpp's
+    // material_ids() now emits real MatId values directly.
     mask_.assign(nc, 0);
-    for (int i = 0; i < nc; ++i) mask_[i] = (mat_[i] == 0 || mat_[i] == 1) ? 1 : 0;
+    for (int i = 0; i < nc; ++i) mask_[i] = (mat_[i] != kMatGas) ? 1 : 0;
   } else {
     if (mask_.empty()) mask_.assign(nc, 1);
     if (static_cast<int>(mask_.size()) != nc)
       throw std::runtime_error("diffusion: mask size mismatch");
     mat_.assign(nc, 0);
-    for (int i = 0; i < nc; ++i) mat_[i] = mask_[i] ? 0 : 2;
+    for (int i = 0; i < nc; ++i) mat_[i] = mask_[i] ? kMatSi : kMatGas;
   }
   build();
 }
@@ -39,9 +43,13 @@ void DiffusionSolver::build() {
   fg_.assign(nf, FGeom{});
   clamped_faces_ = 0;
   has_segregation_ = false;
+  seg_pairs_.clear();
 
   for (int fi = 0; fi < nf; ++fi) {
     const Face& f = mesh_.faces[fi];
+    // "active" = not gas (both sides gas -> kInactive; one side gas -> the
+    // non-gas side gets a zero-flux boundary face, same as the old frozen
+    // rule). mo/mn intentionally mirror mask_ (mask_[i] = mat_[i] != gas).
     const bool mo = mask_[f.owner];
     const bool mn = f.neigh >= 0 && mask_[f.neigh];
     FGeom& g = fg_[fi];
@@ -68,6 +76,11 @@ void DiffusionSolver::build() {
       g.kind = kSegregation;
       g.area = norm(f.S);
       has_segregation_ = true;
+      const int lo = std::min(mat_[f.owner], mat_[f.neigh]);
+      const int hi = std::max(mat_[f.owner], mat_[f.neigh]);
+      if (std::find(seg_pairs_.begin(), seg_pairs_.end(),
+                    std::make_pair(lo, hi)) == seg_pairs_.end())
+        seg_pairs_.emplace_back(lo, hi);
     } else if (mo) {
       g.kind = kBoundOwner;
       const Vec3 db = f.c - mesh_.cell_cent[f.owner];
@@ -193,6 +206,22 @@ Vec3 solve3(double G[3][3], const Vec3& b) {
   return x;
 }
 
+// Builds the per-species SegTable for one step: h(T) is the same interface
+// transport rate for every material pair (the mesh's actual pairs are
+// gated by has_seg / the per-face D>0 guard in assemble()); m defaults to 1
+// (equal partition) for every pair except Si/oxide, which keeps the P1-4
+// equilibrium ratio segregation_m(dp, T).
+SegTable make_seg_table(const Dopant& dp, double temp_k, bool has_seg) {
+  SegTable t;
+  if (has_seg) {
+    const double h = segregation_h(dp, temp_k);
+    for (int i = 0; i < 5; ++i)
+      for (int j = i + 1; j < 5; ++j) t.h[i][j] = h;
+  }
+  t.m[kMatSi][kMatOxide] = segregation_m(dp, temp_k);
+  return t;
+}
+
 }  // namespace
 
 void DiffusionSolver::gradients(const std::vector<double>& c,
@@ -267,7 +296,7 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
                                const std::vector<double>& bcface,
                                const std::vector<double>& cgrad, double dt,
                                double reaction, bool nonortho,
-                               double h_seg, double m_seg,
+                               const SegTable& seg,
                                std::vector<double>& rhs, std::vector<Vec3>& grad) {
   const int nc = static_cast<int>(mesh_.cells.size());
   gradients(cgrad, bcface, grad);
@@ -313,20 +342,30 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
         const double tb = dcell[f.owner] * g.gb;
         A_.val[diag_[f.owner]] += tb;
         rhs[f.owner] += tb * bcface[fi];
-      } else if (g.kind == kSegregation && h_seg > 0) {
-        // owner/neigh may be Si or oxide in either order; identify iS (Si)
-        // and iO (oxide) via mat_, and pick the fslot_ slots accordingly.
-        const bool ownerIsSi = mat_[f.owner] == 0;
-        const int iS = ownerIsSi ? f.owner : f.neigh;
-        const int iO = ownerIsSi ? f.neigh : f.owner;
+      } else if (g.kind == kSegregation) {
+        // A D=0 side blocks flux across this pair entirely (e.g. nitride):
+        // same no-flux-across-a-frozen-side rule as the kInternal guard.
+        if (dcell[f.owner] <= 0 || dcell[f.neigh] <= 0) continue;
+        // owner/neigh may be either material in either order; identify iLo
+        // (the smaller MatId) and iHi via mat_, and pick the fslot_ slots
+        // accordingly. m/h are looked up as seg.{h,m}[lo][hi] per the
+        // min/max material-pair convention.
+        const int matP = mat_[f.owner], matN = mat_[f.neigh];
+        const int lo = std::min(matP, matN), hi = std::max(matP, matN);
+        const double h_seg = seg.h[lo][hi];
+        if (h_seg <= 0) continue;
+        const double m_seg = seg.m[lo][hi];
+        const bool ownerIsLo = matP == lo;
+        const int iLo = ownerIsLo ? f.owner : f.neigh;
+        const int iHi = ownerIsLo ? f.neigh : f.owner;
         const double hA = h_seg * g.area;
         // fslot_[fi][0] is the (owner,neigh) slot, [1] is (neigh,owner).
-        const int s_S_to_O = ownerIsSi ? fslot_[fi][0] : fslot_[fi][1];
-        const int s_O_to_S = ownerIsSi ? fslot_[fi][1] : fslot_[fi][0];
-        A_.val[diag_[iS]]  += hA;
-        A_.val[s_S_to_O]   -= hA * m_seg;
-        A_.val[diag_[iO]]  += hA * m_seg;
-        A_.val[s_O_to_S]   -= hA;
+        const int s_Lo_to_Hi = ownerIsLo ? fslot_[fi][0] : fslot_[fi][1];
+        const int s_Hi_to_Lo = ownerIsLo ? fslot_[fi][1] : fslot_[fi][0];
+        A_.val[diag_[iLo]]  += hA;
+        A_.val[s_Lo_to_Hi]  -= hA * m_seg;
+        A_.val[diag_[iHi]]  += hA * m_seg;
+        A_.val[s_Hi_to_Lo]  -= hA;
       }
     }
   }
@@ -388,7 +427,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
       // n/ni from charge neutrality with the current iterate of all species.
       // Oxide cells carry no free carriers relevant to this model: nni=1.
       for (int i = 0; i < nc; ++i) {
-        if (mat_[i] != 0) { nni[i] = 1.0; continue; }
+        if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
         double nnet = 0;
         for (int s = 0; s < ns; ++s) {
           const double c = (*fields[s].conc)[i];
@@ -397,12 +436,18 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         const double cc = nnet / (2.0 * ni);
         nni[i] = cc + std::sqrt(cc * cc + 1.0);
       }
-      // Per-cell diffusivity, optionally with field enhancement.
+      // Per-cell diffusivity: full Fair model (+ optional field enhancement)
+      // in Si; plain material_diffusivity() elsewhere (n/ni is meaningless
+      // outside Si, so pass 1.0).
       for (int s = 0; s < ns; ++s) {
         const Dopant& dp = *fields[s].dopant;
         for (int i = 0; i < nc; ++i) {
           if (!mask_[i]) { dcell[s][i] = 0; continue; }
-          if (mat_[i] == 1) { dcell[s][i] = oxide_diffusivity(dp, o.temp); continue; }
+          if (mat_[i] != kMatSi) {
+            dcell[s][i] = material_diffusivity(dp, static_cast<MatId>(mat_[i]),
+                                               o.temp, 1.0);
+            continue;
+          }
           double dv = dopant_diffusivity(dp, o.temp, nni[i]);
           if (o.field_enh) {
             const bool ntype = nni[i] >= 1.0;
@@ -420,18 +465,22 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
       for (int s = 0; s < ns; ++s) {
         const Dopant& dp = *fields[s].dopant;
         std::vector<double>& c = *fields[s].conc;
-        const double h_seg = has_segregation_ ? segregation_h(dp, o.temp) : 0.0;
-        const double m_seg = segregation_m(dp, o.temp);
-        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, h_seg,
-                 m_seg, rhs, grad);
+        const SegTable seg = make_seg_table(dp, o.temp, has_segregation_);
+        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
+                 rhs, grad);
+
+        // Bicgstab is only needed if a present material pair has m != 1 (the
+        // segregation cross-terms then make the matrix non-symmetric); a
+        // pure m=1 mesh (or no segregation faces at all) stays SPD.
+        bool need_bicg = false;
+        for (const auto& [lo, hi] : seg_pairs_)
+          if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) { need_bicg = true; break; }
 
         x = c;  // warm start
         // ILU(0)-preconditioned CG (parallel, level-scheduled triangular solves)
-        // with a BiCGSTAB fallback for the occasional non-SPD assembly. The
-        // segregation cross-terms make the matrix non-symmetric when m != 1,
-        // so skip straight to BiCGSTAB in that case.
+        // with a BiCGSTAB fallback for the occasional non-SPD assembly.
         SolveResult sr;
-        if (has_segregation_ && h_seg > 0) {
+        if (need_bicg) {
           sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
         } else {
           sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
@@ -541,9 +590,10 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
         mesh_.faces[fi].neigh < 0)
       psi_bcface[fi] = 0.0;
 
-  // Interstitial diffusivity is constant in silicon, zero in frozen regions.
+  // Interstitial diffusivity is constant in silicon, zero elsewhere (the
+  // point-defect model is Si-only; P1-9 gates it to mat_ == kMatSi).
   std::vector<double> dI(nc, 0.0);
-  for (int i = 0; i < nc; ++i) dI[i] = mask_[i] ? d_I : 0.0;
+  for (int i = 0; i < nc; ++i) dI[i] = (mat_[i] == kMatSi) ? d_I : 0.0;
 
   std::vector<double> mass0(ns, 0.0);
   for (int s = 0; s < ns; ++s)
@@ -563,7 +613,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
 
     // ── 1. Advance the interstitial excess one implicit step (linear). ──
     psi_old = psi;
-    assemble(dI, psi_old, psi_bcface, psi_old, dt, k_rec, o.nonortho, 0.0, 0.0,
+    assemble(dI, psi_old, psi_bcface, psi_old, dt, k_rec, o.nonortho, SegTable{},
              rhs, grad);
     x = psi;
     SolveResult sp = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
@@ -579,7 +629,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
     double smax = 0;
     std::vector<double> S(nc, 1.0);
     for (int i = 0; i < nc; ++i) {
-      S[i] = 1.0 + (mask_[i] ? std::min(psi[i] / cstar, kSmax) : 0.0);
+      S[i] = 1.0 + ((mat_[i] == kMatSi) ? std::min(psi[i] / cstar, kSmax) : 0.0);
       smax = std::max(smax, S[i]);
     }
 
@@ -593,7 +643,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
 
       for (int picard = 1; picard <= o.max_picard; ++picard) {
         for (int i = 0; i < nc; ++i) {
-          if (mat_[i] != 0) { nni[i] = 1.0; continue; }
+          if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
           double nnet = 0;
           for (int s = 0; s < ns; ++s) {
             const double c = (*fields[s].conc)[i];
@@ -606,7 +656,11 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
           const Dopant& dp = *fields[s].dopant;
           for (int i = 0; i < nc; ++i) {
             if (!mask_[i]) { dcell[s][i] = 0; continue; }
-            if (mat_[i] == 1) { dcell[s][i] = oxide_diffusivity(dp, o.temp); continue; }
+            if (mat_[i] != kMatSi) {
+              dcell[s][i] = material_diffusivity(dp, static_cast<MatId>(mat_[i]),
+                                                 o.temp, 1.0);
+              continue;
+            }
             double dv = dopant_diffusivity(dp, o.temp, nni[i]);
             if (o.field_enh) {
               const bool ntype = nni[i] >= 1.0;
@@ -616,7 +670,8 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
                 dv *= 1.0 + std::fabs(cc) / std::sqrt(cc * cc + 1.0);
               }
             }
-            // Pair-diffusion enhancement: (1 - fi) + fi * S.
+            // Pair-diffusion (TED) enhancement is a Si point-defect effect:
+            // (1 - fi) + fi * S, Si cells only.
             dv *= (1.0 - dp.fi) + dp.fi * S[i];
             dcell[s][i] = dv;
           }
@@ -626,13 +681,15 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
         for (int s = 0; s < ns; ++s) {
           const Dopant& dp = *fields[s].dopant;
           std::vector<double>& c = *fields[s].conc;
-          const double h_seg = has_segregation_ ? segregation_h(dp, o.temp) : 0.0;
-          const double m_seg = segregation_m(dp, o.temp);
-          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, h_seg,
-                   m_seg, rhs, grad);
+          const SegTable seg = make_seg_table(dp, o.temp, has_segregation_);
+          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
+                   rhs, grad);
+          bool need_bicg = false;
+          for (const auto& [lo, hi] : seg_pairs_)
+            if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) { need_bicg = true; break; }
           x = c;
           SolveResult sr;
-          if (has_segregation_ && h_seg > 0) {
+          if (need_bicg) {
             sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
           } else {
             sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);

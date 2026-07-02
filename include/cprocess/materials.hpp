@@ -9,6 +9,16 @@ constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
 enum class DopType { donor, acceptor };
 
+// Per-cell material id (P1-9). 0/1 stay compatible with the P1-4 cell_mat
+// values; 2 (the old "frozen/other" catch-all) is synonymous with kMatGas.
+enum MatId : int { kMatSi = 0, kMatOxide = 1, kMatNitride = 2, kMatPoly = 3,
+                    kMatGas = 4 };
+
+// "silicon"/"si" -> kMatSi, "oxide"/"sio2" -> kMatOxide,
+// "nitride"/"si3n4" -> kMatNitride, "poly"/"polysilicon" -> kMatPoly,
+// "gas" and anything unrecognized -> kMatGas. Case-insensitive.
+MatId material_id(const std::string& name);
+
 // Dopant in silicon, Fair's charged point-defect (vacancy) model:
 //   D = D0 + Dminus*(n/ni) + Ddminus*(n/ni)^2 + Dplus*(p/ni)   [cm^2/s]
 // with each term DX = dX * exp(-eX / kT).
@@ -41,6 +51,10 @@ struct Dopant {
   double seg_h0 = 1.0e5, seg_he = 2.0;  // ~1.2e-3 cm/s at 1000 C
   // Diffusivity in SiO2 (plain Arrhenius, cm^2/s): D_ox = dox0*exp(-eox/kT)
   double dox0 = 0.0, eox = 0.0;         // 0 => immobile inside oxide
+
+  // ── Diffusivity outside silicon (P1-9): plain Fickian D0*exp(-E/kT) ──
+  double dnit0 = 0.0, enit = 0.0;    // Si3N4: 0 => perfect barrier
+  double dpoly0 = 0.0, epoly = 0.0;  // poly-Si: GB-enhanced, ~10x cryst. Si
 };
 
 // Case-insensitive lookup by name or symbol ("B", "boron", ...); nullptr if
@@ -77,5 +91,10 @@ bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp);
 double segregation_m(const Dopant& d, double temp_k);     // seg_m0*exp(-seg_e/kT)
 double segregation_h(const Dopant& d, double temp_k);     // seg_h0*exp(-seg_he/kT)
 double oxide_diffusivity(const Dopant& d, double temp_k); // dox0*exp(-eox/kT); 0 if dox0<=0
+
+// ── Material-dependent diffusivity (P1-9) ──
+// D in material `mat` at temp_k, for n/ni = nni (only used for kMatSi).
+double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
+                            double nni);
 
 }  // namespace cp

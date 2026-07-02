@@ -546,6 +546,35 @@ def test_segregation_dose_loss():
           "within 1% across oxidize+diffuse")
 
 
+def test_nitride_barrier_python():
+    """deposit('nitride') caps the mesh; diffuse() must not leak dopant into
+    the (D=0) nitride layer (P1-9 material-dependent diffusion)."""
+    print("test_nitride_barrier_python")
+    sim = cp.Simulation()
+    sim.mesh(0.2, 0.2, 0.4, 4, 4, 40)
+    sim.region("silicon")
+    z_si_top = sim.bbox()[1][2] * 1e4  # bbox() is in cm; convert to µm
+    # Keep the implant well below the pre-deposit surface (rp=0.15, drp=0.02
+    # => ~7.5 sigma from z_si_top) so deposit()'s nearest-centroid field
+    # transfer (which copies the nearest *old* cell's value into new cells,
+    # not zero) doesn't seed the new nitride cells with a stray tail from
+    # the implant itself; the only route into the nitride is diffusion.
+    sim.implant("B", dose=1e14, rp=0.15, drp=0.02)
+    sim.deposit("nitride", thickness=0.1)
+    sim.diffuse(30, 1000)
+
+    cent = sim.cell_centroids  # µm
+    b = sim.field("B")
+    vol = sim.cell_volumes
+    nitride_mask = cent[:, 2] > z_si_top
+    total = float(np.sum(b * vol))
+    nitride_dose = float(np.sum(b[nitride_mask] * vol[nitride_mask]))
+    frac = nitride_dose / total
+    print(f"  nitride_dose/total={100 * frac:.4g}%")
+    check(frac < 0.001, "nitride: B dose leaking into the nitride cap is "
+          "< 0.1% of the total")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -571,4 +600,5 @@ if __name__ == "__main__":
     test_geometry_chain()
     test_save_and_fields()
     test_segregation_dose_loss()
+    test_nitride_barrier_python()
     print("\nall comprehensive Simulation tests passed")

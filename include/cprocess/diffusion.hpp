@@ -36,6 +36,17 @@ struct SpeciesField {
   std::vector<double>* conc = nullptr;  // per-cell concentration, cm^-3
 };
 
+// Per-material-pair segregation coefficients (P1-9), indexed by
+// [min(matP,matN)][max(matP,matN)]. h is the interface transport rate
+// (cm/s); m is the equilibrium ratio C_{lower id}/C_{higher id}. Defaults:
+// h=0 (no exchange), m=1 (equal partition); the Si/oxide pair is filled by
+// run()/run_ted() with segregation_h/m(dp, T) per P1-4.
+struct SegTable {
+  double h[5][5] = {};
+  double m[5][5] = {{1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}, {1, 1, 1, 1, 1},
+                    {1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}};
+};
+
 // Cell-centered finite-volume dopant diffusion on an unstructured tet mesh.
 //
 //   dC/dt = div( D(T, n/ni) grad C )
@@ -51,10 +62,10 @@ struct SpeciesField {
 // interfaces are treated as zero-flux walls.
 class DiffusionSolver {
  public:
-  // Per-cell material id: 0 = silicon (full Fair model), 1 = oxide
-  // (constant D_ox + segregation exchange with Si), 2 = other (frozen).
-  // Empty vector (default) derives ids from solve_mask: mask=1 -> 0,
-  // mask=0 -> 2, i.e. the pre-P1-4 behavior.
+  // Per-cell material id (MatId: 0 Si, 1 oxide, 2 nitride, 3 poly, 4 gas).
+  // The legacy value 2 (P1-4's "other/frozen") is synonymous with kMatGas.
+  // Empty vector (default) derives ids from solve_mask: mask=1 -> kMatSi,
+  // mask=0 -> kMatGas, i.e. the pre-P1-4 behavior.
   DiffusionSolver(const Mesh& mesh, std::vector<char> solve_mask,
                   std::ostream* log = nullptr,
                   std::vector<int> cell_mat = {});
@@ -102,13 +113,17 @@ class DiffusionSolver {
                 const std::vector<double>& cold,
                 const std::vector<double>& bcface,
                 const std::vector<double>& cgrad, double dt, double reaction,
-                bool nonortho, double h_seg, double m_seg,
+                bool nonortho, const SegTable& seg,
                 std::vector<double>& rhs, std::vector<Vec3>& grad);
 
   const Mesh& mesh_;
   std::vector<char> mask_;
-  std::vector<int> mat_;   // per-cell material id: 0 Si, 1 oxide, 2 other
-  bool has_segregation_ = false;
+  std::vector<int> mat_;   // per-cell MatId (0 Si .. 4 gas)
+  bool has_segregation_ = false;  // any active kSegregation face
+  // Distinct (lo,hi) MatId pairs present as kSegregation faces, filled by
+  // build(); used to decide per-species whether SegTable has any m != 1
+  // pair actually present in the mesh (-> switch to bicgstab_ilu0).
+  std::vector<std::pair<int, int>> seg_pairs_;
   std::ostream* log_;
   std::vector<FGeom> fg_;
   CSR A_;
