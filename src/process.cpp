@@ -458,14 +458,17 @@ void deposit(SimState& st, const std::string& material,
   }
   st.region_material[dep_tag] = mat;
 
-  // Transfer all existing fields to the extended mesh (new cells start at 0).
+  // Transfer all existing fields to the extended mesh. Cells above the old
+  // outer surface belong to the freshly deposited film and start clean (zero
+  // concentration) — nearest-centroid transfer must not copy the substrate's
+  // near-surface tail into them.
   for (auto& [sym, conc] : st.fields) {
     std::vector<double> new_conc(nc_ext, 0.0);
-    // Nearest-centroid transfer from old mesh.
     for (int ci = 0; ci < nc_ext; ++ci) {
+      const Vec3& cc = ext.cell_cent[ci];
+      if (cc.z > z_top) continue;  // new film cell: stays 0
       double best = 1e300;
       int best_j = 0;
-      const Vec3& cc = ext.cell_cent[ci];
       const int nc_old = static_cast<int>(st.mesh.cells.size());
       for (int j = 0; j < nc_old; ++j) {
         const Vec3& oc = st.mesh.cell_cent[j];

@@ -535,6 +535,28 @@ static void test_vtk_writer_extra() {
 }
 
 // ---------------------------------------------------------------------------
+// Deposited film cells must start with zero dopant: the nearest-centroid
+// transfer must not copy the substrate's near-surface tail into the new film
+// (regression for a bug found during P1-9).
+static void test_deposit_clean_film() {
+  std::printf("test_deposit_clean_film\n");
+  SimState st;
+  proc::mesh_box(st, 0, 0.4e-4, 0, 0.4e-4, 0, 0.4e-4, 4, 4, 4);
+  proc::set_region(st, "silicon", -1);
+  // Shallow profile peaking right at the top surface.
+  proc::implant_gauss(st, "B", 1e14, 0.0, 0.39e-4, 0.05e-4, 0.0,
+                      false, 0, 0, 0, 0, false, nullptr);
+  const double z_top = st.mesh.bbox().hi.z;
+  proc::deposit(st, "nitride", 0.1e-4, 2, {}, nullptr);
+  const auto& B = st.fields.at("B");
+  double in_film = 0.0;
+  for (std::size_t i = 0; i < B.size(); ++i)
+    if (st.mesh.cell_cent[i].z > z_top) in_film += B[i];
+  CHECK(in_film == 0.0);
+  std::printf("  ok: deposited film cells start with zero dopant\n");
+}
+
+// ---------------------------------------------------------------------------
 int main() {
   test_materials();
   test_sparse();
@@ -545,6 +567,7 @@ int main() {
   test_remesh_extra();
   test_ale_extra();
   test_vtk_writer_extra();
+  test_deposit_clean_film();
   std::printf("\nall unit tests passed\n");
   return 0;
 }
