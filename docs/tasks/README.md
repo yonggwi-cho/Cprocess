@@ -36,7 +36,9 @@
 | M-1 | `M1_edge_split_batch.md` | 仕様確定 | なし |
 | M-5 | `M5_quality_repair.md` | 仕様確定 | M-1 |
 | M-4 | `M4_interface_conform.md` | 仕様確定 | M-1, M-5 |
-| P1-6 | (未作成) | Sprint 0 完了後に具体化 | M-4, M-5 |
+| P1-6 | `P1-6_oxidize.md` | 仕様確定 | M-4, M-5 |
+| P1-4 | `P1-4_segregation.md` | 仕様確定 | P1-6 |
+| P1-9 | `P1-9_multimaterial_diffusion.md` | 仕様確定 | P1-4 |
 | 以降 | — | 各 Sprint 開始時に just-in-time で具体化 | — |
 
 計画全体は `docs/IMPLEMENTATION_PLAN.md` を参照。
