@@ -260,6 +260,18 @@ Sprint 0 を酸化統合の前に置く理由: 酸化で界面が動き出すと
 自動回復 (M-5) と界面適合 (M-4) がないと大変形時に破綻するため。
 ソルバーは当面現行で足りるが、S-1 のみ費用対効果が高く先行させる。
 
+### タスク仕様書 (実装エージェント用)
+
+本ロードマップの各項目は、着手する Sprint の開始時に `docs/tasks/` 配下の
+タスク仕様書へ具体化する。仕様書は実装エージェント (Claude Sonnet クラス) が
+追加の設計判断なしに実装できる粒度 (対象関数シグネチャ・アルゴリズム手順・
+数値基準つきテスト仕様・DoD・スコープ外の明示) で記述する。
+フォーマットは `docs/tasks/README.md` を参照。
+
+Sprint 0 の 4 タスクは仕様確定済み:
+`S1_parallel_ilu.md` / `M1_edge_split_batch.md` / `M5_quality_repair.md` /
+`M4_interface_conform.md` (この順で実装する。M-4 は M-1/M-5 に依存)。
+
 各項目は既存の開発規約に従う:
 - 物理は C++ core、proc:: に工程 API、pybind + Simulation メソッドを必ず追加 (CLAUDE.md)
 - 各項目にテスト (`tests/test_*.cpp` + `python/test_comprehensive.py`) を追加
