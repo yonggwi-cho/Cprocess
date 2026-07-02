@@ -157,7 +157,7 @@ static void test_deck_vs_proc_equivalence() {
     proc::set_region(st_proc, "silicon", -1, &log);
     proc::init(st_proc, "P", 1e15, -1, &log);
     proc::implant_gauss(st_proc, "B", 1e13, 0.0, 0.1e-4, 0.03e-4, 0, false, 0,
-                        0, 0, 0, false, &log);
+                        0, 0, 0, false, "gauss", &log);
     DiffuseOpts opts;
     opts.time = 5 * 60.0;
     opts.temp = 1000 + 273.15;
@@ -188,7 +188,7 @@ static SimState run_gauss_diffuse(int nthreads) {
   proc::set_region(st, "silicon", -1, &log);
   proc::init(st, "B", 1e15, -1, &log);
   proc::implant_gauss(st, "B", 1e13, 0.0, 0.1e-4, 0.03e-4, 0, false, 0, 0, 0,
-                      0, false, &log);
+                      0, false, "gauss", &log);
   const int zmax = st.mesh.find_patch("zmax");
   proc::add_bc(st, "B", zmax, 1e19, &log);
   DiffuseOpts opts;
@@ -248,7 +248,7 @@ static void test_conservation_chain() {
   proc::set_region(st, "silicon", -1, &log);
   proc::init(st, "B", 1e15, -1, &log);
   proc::implant_gauss(st, "B", 1e13, 0.0, 0.1e-4, 0.03e-4, 0, false, 0, 0, 0,
-                      0, false, &log);
+                      0, false, "gauss", &log);
 
   const double mass0 = total_mass(st, "B");
 
@@ -316,7 +316,7 @@ static void test_ted_lifecycle() {
   proc::set_region(st, "silicon", -1, &log);
   proc::init(st, "B", 1e15, -1, &log);
   proc::implant_gauss(st, "B", 1e13, 40.0, 0, 0, 0, false, 0, 0, 0, 0,
-                      /*seed_damage=*/true, &log);
+                      /*seed_damage=*/true, "gauss", &log);
 
   const double s0 = field_spread(st, "B");
   double i0 = 0;

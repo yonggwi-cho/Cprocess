@@ -15,12 +15,15 @@ namespace cp {
 // With a mask window [x1,x2]x[y1,y2] the lateral spread uses the standard
 // error-function convolution with lateral straggle dRl.
 struct ImplantParams {
+  enum class Profile { gauss, pearson4 };
   const Dopant* dopant = nullptr;
   double dose = 0;          // cm^-2
   double rp = 0, drp = 0;   // cm
   double drl = 0;           // cm; <=0 selects 0.8*dRp
   bool has_window = false;
   double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  Profile profile = Profile::gauss;
+  double gamma = 0.0, beta = 3.0;  // Pearson-IV moments (profile=pearson4)
 };
 
 // Adds the implant profile to `conc` for cells where mask is true.

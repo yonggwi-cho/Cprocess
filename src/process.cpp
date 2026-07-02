@@ -233,12 +233,24 @@ void init(SimState& st, const std::string& species, double conc, int region,
 double implant_gauss(SimState& st, const std::string& species, double dose,
                      double energy_kev, double rp, double drp, double drl,
                      bool has_window, double x1, double x2, double y1, double y2,
-                     bool seed_damage, std::ostream* log) {
+                     bool seed_damage, const std::string& profile,
+                     std::ostream* log) {
   need_mesh(st);
+  if (profile != "gauss" && profile != "pearson")
+    throw std::runtime_error("implant: profile must be gauss|pearson");
   ImplantParams p;
   p.dopant = dopant_or_throw(species);
   p.dose = dose;
-  if (energy_kev > 0) {
+  if (profile == "pearson") {
+    if (!(energy_kev > 0))
+      throw std::runtime_error("pearson profile requires energy=");
+    double gamma = 0, beta = 3;
+    if (!implant_moments(*p.dopant, energy_kev, p.rp, p.drp, gamma, beta))
+      throw std::runtime_error("no range table for species; give rp/drp");
+    p.profile = ImplantParams::Profile::pearson4;
+    p.gamma = gamma;
+    p.beta = beta;
+  } else if (energy_kev > 0) {
     if (!implant_range(*p.dopant, energy_kev, p.rp, p.drp))
       throw std::runtime_error("no range table for species; give rp/drp");
   } else {
@@ -253,10 +265,23 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
   const std::vector<double> before = seed_damage ? f : std::vector<double>{};
   const double atoms = apply_implant(st.mesh, silicon_mask(st), p, f);
   if (seed_damage) seed_interstitials(st, before, f);
+  bool used_pearson = false;
+  if (p.profile == ImplantParams::Profile::pearson4) {
+    // Mirror apply_implant's Type-IV validity check for accurate logging
+    // (apply_implant itself falls back silently to Gaussian when invalid).
+    const double A = 10.0 * p.beta - 12.0 * p.gamma * p.gamma - 18.0;
+    if (A != 0.0 && p.beta > 1.0 + p.gamma * p.gamma) {
+      const double b0 = -p.drp * p.drp * (4.0 * p.beta - 3.0 * p.gamma * p.gamma) / A;
+      const double b1 = -p.gamma * p.drp * (p.beta + 3.0) / A;
+      const double b2 = -(2.0 * p.beta - 3.0 * p.gamma * p.gamma - 6.0) / A;
+      used_pearson = (b1 * b1 - 4.0 * b0 * b2) < 0.0;
+    }
+  }
   if (log)
     *log << "[implant] " << p.dopant->symbol << " gauss: dose="
          << fmt("%.3g", p.dose) << " cm^-2, Rp=" << fmt("%.4g", p.rp * 1e4)
-         << " um, dRp=" << fmt("%.4g", p.drp * 1e4) << " um\n";
+         << " um, dRp=" << fmt("%.4g", p.drp * 1e4)
+         << " um, profile=" << (used_pearson ? "pearson4" : "gauss") << "\n";
   return atoms;
 }
 

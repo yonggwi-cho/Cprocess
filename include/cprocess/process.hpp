@@ -41,7 +41,9 @@ void init(SimState& st, const std::string& species, double conc,
 double implant_gauss(SimState& st, const std::string& species, double dose,
                      double energy_kev, double rp, double drp, double drl,
                      bool has_window, double x1, double x2, double y1, double y2,
-                     bool seed_damage = false, std::ostream* log = nullptr);
+                     bool seed_damage = false,
+                     const std::string& profile = "gauss",
+                     std::ostream* log = nullptr);
 
 // Monte Carlo (BCA) implant. When a photoresist stack is present (after
 // photo()), transport runs through the full physical stack and the profile is

@@ -127,7 +127,7 @@ class Simulation:
                 rp: float = 0.0, drp: float = 0.0, drl: float = 0.0,
                 ions: int = 100000, tilt: float = 0.0, rotation: float = 0.0,
                 seed: int = 1, threads: int = 0, channeling: bool = False,
-                window=None, damage: bool = False):
+                window=None, damage: bool = False, profile: str = "gauss"):
         """Ion implant.
 
         dose [cm^-2], energy [keV]. `mc=True` selects Monte-Carlo BCA, otherwise
@@ -141,7 +141,13 @@ class Simulation:
         Kinchin-Pease damage field (x kFrenkelSurvival, capped at
         kAmorphizationDensity); otherwise (Gaussian, or MC without channeling)
         the "+1" model is used (dopant profile copied into "I").
+        `profile="pearson"` selects a Pearson-IV depth profile (analytic
+        implant only; requires `energy=`, not rp/drp) built from the 4-moment
+        table (Rp, dRp, gamma, beta); it falls back to Gaussian when the
+        moments don't satisfy the Type-IV validity condition.
         """
+        if mc and profile != "gauss":
+            raise ValueError("profile applies to the analytic implant only")
         has_window = window is not None
         x1, x2, y1, y2 = (window if has_window else (0, 0, 0, 0))
         if mc:
@@ -153,7 +159,7 @@ class Simulation:
             return ImplantResult(stats, log)
         atoms, log = _c.proc_implant_gauss(self._st, species, float(dose),
             float(energy), rp * UM, drp * UM, drl * UM, has_window,
-            x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(damage))
+            x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(damage), profile)
         self._emit(log)
         return atoms
 

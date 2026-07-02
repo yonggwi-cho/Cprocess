@@ -194,6 +194,17 @@ PYBIND11_MODULE(_cprocess, m) {
       .def_readwrite("x2", &ImplantParams::x2)
       .def_readwrite("y1", &ImplantParams::y1)
       .def_readwrite("y2", &ImplantParams::y2)
+      .def_readwrite("gamma", &ImplantParams::gamma)
+      .def_readwrite("beta",  &ImplantParams::beta)
+      .def_property("profile",
+          [](const ImplantParams& p) {
+            return p.profile == ImplantParams::Profile::pearson4
+                       ? "pearson" : "gauss"; },
+          [](ImplantParams& p, const std::string& s) {
+            if (s == "pearson") p.profile = ImplantParams::Profile::pearson4;
+            else if (s == "gauss") p.profile = ImplantParams::Profile::gauss;
+            else throw std::runtime_error("profile must be gauss|pearson");
+          })
       .def("set_dopant",
           [](ImplantParams& p, const std::string& name) {
             p.dopant = find_dopant(name);
@@ -409,17 +420,18 @@ PYBIND11_MODULE(_cprocess, m) {
       [](SimState& st, const std::string& species, double dose,
          double energy_kev, double rp, double drp, double drl,
          bool has_window, double x1, double x2, double y1, double y2,
-         bool damage) {
+         bool damage, const std::string& profile) {
         std::ostringstream log;
         const double atoms = proc::implant_gauss(st, species, dose, energy_kev,
-            rp, drp, drl, has_window, x1, x2, y1, y2, damage, &log);
+            rp, drp, drl, has_window, x1, x2, y1, y2, damage, profile, &log);
         return py::make_tuple(atoms, log.str());
       },
       py::arg("state"), py::arg("species"), py::arg("dose"),
       py::arg("energy_kev") = 0.0, py::arg("rp") = 0.0, py::arg("drp") = 0.0,
       py::arg("drl") = 0.0, py::arg("has_window") = false,
       py::arg("x1") = 0.0, py::arg("x2") = 0.0, py::arg("y1") = 0.0,
-      py::arg("y2") = 0.0, py::arg("damage") = false);
+      py::arg("y2") = 0.0, py::arg("damage") = false,
+      py::arg("profile") = "gauss");
 
   // damage=True seeds the "I" field: with channeling=True from the MC's own
   // Kinchin-Pease damage array (x kFrenkelSurvival, capped at

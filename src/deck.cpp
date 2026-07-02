@@ -185,9 +185,11 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
   } else {
     energy = c.num("energy", Unit::energy);
   }
+  const std::string profile =
+      c.has("profile") ? lower(c.kv.at("profile")) : std::string("gauss");
   proc::implant_gauss(st, species, dose, energy, rp, drp,
                       c.num_or("drl", Unit::length, 0), has_window, x1, x2, y1, y2,
-                      c.flag_or("damage", false), &log);
+                      c.flag_or("damage", false), profile, &log);
 }
 
 void cmd_photo(SimState& st, const Cmd& c, std::ostream& log) {

@@ -374,7 +374,7 @@ static void test_proc_errors() {
     bool threw = false;
     try {
       proc::implant_gauss(st, "B", 1e13, 0.0, 0.0, 0.0, 0, false, 0, 0, 0, 0,
-                          false, nullptr);
+                          false, "gauss", nullptr);
     } catch (const std::exception&) {
       threw = true;
     }
@@ -545,7 +545,7 @@ static void test_deposit_clean_film() {
   proc::set_region(st, "silicon", -1);
   // Shallow profile peaking right at the top surface.
   proc::implant_gauss(st, "B", 1e14, 0.0, 0.39e-4, 0.05e-4, 0.0,
-                      false, 0, 0, 0, 0, false, nullptr);
+                      false, 0, 0, 0, 0, false, "gauss", nullptr);
   const double z_top = st.mesh.bbox().hi.z;
   proc::deposit(st, "nitride", 0.1e-4, 2, {}, nullptr);
   const auto& B = st.fields.at("B");

@@ -677,6 +677,42 @@ def test_rta_ramp_python():
 
 
 # ---------------------------------------------------------------------------
+def test_pearson_python():
+    """P1-1: Pearson-IV analytic implant depth profile."""
+    print("test_pearson_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.2, y=0.2, z=1.2, nx=2, ny=2, nz=240)
+    sim.region("silicon")
+    sim.implant("B", dose=1e14, energy=200, profile="pearson")
+    check(abs(sim.dose("B") / 1e14 - 1) < 0.01, "pearson dose conserved")
+
+    c = sim.field("B")
+    v = sim.cell_volumes
+    z = sim.cell_centroids[:, 2]
+    d = z.max() - z  # depth from the top surface [um]
+    w = c * v
+    mean = (w * d).sum() / w.sum()
+    mu3 = (w * (d - mean) ** 3).sum() / w.sum()
+    check(mu3 < 0, "pearson profile has negative (surface-side) skew")
+
+    sim2 = cp.Simulation()
+    sim2.mesh(x=0.2, y=0.2, z=1.2, nx=2, ny=2, nz=60)
+    sim2.region("silicon")
+    threw = False
+    try:
+        sim2.implant("B", dose=1e13, rp=0.1, drp=0.03, profile="pearson")
+    except RuntimeError:
+        threw = True
+    check(threw, "pearson without energy raises RuntimeError")
+    threw = False
+    try:
+        sim2.implant("B", dose=1e13, energy=50, mc=True, profile="pearson")
+    except ValueError:
+        threw = True
+    check(threw, "mc=True with profile='pearson' raises ValueError")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -705,4 +741,5 @@ if __name__ == "__main__":
     test_nitride_barrier_python()
     test_activation_python()
     test_rta_ramp_python()
+    test_pearson_python()
     print("\nall comprehensive Simulation tests passed")

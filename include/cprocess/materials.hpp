@@ -49,9 +49,10 @@ struct Dopant {
   // by (1 - fi) + fi * (C_I / C_I*). B, P are interstitial-dominated (~1),
   // As is mixed (~0.4), Sb is vacancy-dominated (~0.1).
   double fi = 0.5;
-  // Approximate projected range table {energy keV, Rp cm, dRp cm};
-  // override with rp=/drp= in the deck for accurate work.
-  std::vector<std::array<double, 3>> range;
+  // Approximate projected range/moment table {energy keV, Rp cm, dRp cm,
+  // gamma (skewness), beta (kurtosis)}; override with rp=/drp= in the deck
+  // for accurate work.
+  std::vector<std::array<double, 5>> range;
 
   // ── Si/SiO2 interface segregation (P1-4) ──
   // Equilibrium segregation coefficient m(T) = C_si / C_ox at the interface:
@@ -101,6 +102,11 @@ double interstitial_recomb_rate(double temp_k);
 // Interpolates the range table (linear in log E). Returns false if the
 // dopant has no table; clamps outside the tabulated energy range.
 bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp);
+
+// Interpolates all 4 moments (Rp, dRp, gamma, beta), linear in log E, same
+// clamping behavior as implant_range.
+bool implant_moments(const Dopant& d, double energy_kev, double& rp,
+                     double& drp, double& gamma, double& beta);
 
 // ── Si/SiO2 interface segregation accessors (P1-4) ──
 double segregation_m(const Dopant& d, double temp_k);     // seg_m0*exp(-seg_e/kT)
