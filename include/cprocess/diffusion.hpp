@@ -51,8 +51,13 @@ struct SpeciesField {
 // interfaces are treated as zero-flux walls.
 class DiffusionSolver {
  public:
+  // Per-cell material id: 0 = silicon (full Fair model), 1 = oxide
+  // (constant D_ox + segregation exchange with Si), 2 = other (frozen).
+  // Empty vector (default) derives ids from solve_mask: mask=1 -> 0,
+  // mask=0 -> 2, i.e. the pre-P1-4 behavior.
   DiffusionSolver(const Mesh& mesh, std::vector<char> solve_mask,
-                  std::ostream* log = nullptr);
+                  std::ostream* log = nullptr,
+                  std::vector<int> cell_mat = {});
 
   void run(std::vector<SpeciesField>& fields,
            const std::vector<DirichletBC>& bcs, const DiffuseOpts& opts);
@@ -69,9 +74,10 @@ class DiffusionSolver {
  private:
   enum FaceKind : char {
     kInactive = 0,   // both sides masked
-    kInternal = 1,   // flux between two active cells
+    kInternal = 1,   // flux between two active cells (same material)
     kBoundOwner = 2, // only owner active (boundary or material interface)
     kBoundNeigh = 3, // only neigh active (material interface)
+    kSegregation = 4, // Si/oxide interface: segregation exchange
   };
   struct FGeom {
     char kind = kInactive;
@@ -80,6 +86,7 @@ class DiffusionSolver {
     double delP = 0, delN = 0;  // centroid-to-face distances along the normal
     double gb = 0;            // boundary transmissibility |S|^2/(S.(cf-cP))
     Vec3 k;                   // non-orthogonal residual vector S - g*d
+    double area = 0;          // |S|, kSegregation faces only
   };
 
   void build();
@@ -95,10 +102,13 @@ class DiffusionSolver {
                 const std::vector<double>& cold,
                 const std::vector<double>& bcface,
                 const std::vector<double>& cgrad, double dt, double reaction,
-                bool nonortho, std::vector<double>& rhs, std::vector<Vec3>& grad);
+                bool nonortho, double h_seg, double m_seg,
+                std::vector<double>& rhs, std::vector<Vec3>& grad);
 
   const Mesh& mesh_;
   std::vector<char> mask_;
+  std::vector<int> mat_;   // per-cell material id: 0 Si, 1 oxide, 2 other
+  bool has_segregation_ = false;
   std::ostream* log_;
   std::vector<FGeom> fg_;
   CSR A_;

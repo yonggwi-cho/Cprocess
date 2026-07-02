@@ -495,6 +495,57 @@ def test_save_and_fields():
           "cell_volumes sum matches box volume (cm^3)")
 
 
+def test_segregation_dose_loss():
+    """oxidize + diffuse: boron segregates into the grown oxide and its
+    dose within the (pre-oxidation) silicon region drops, while the total
+    (Si+oxide) dose is conserved.
+
+    The reference mesh's tets only give a fraction of each interface hex
+    direct face contact with the oxide (see tests/test_segregation.cpp for
+    the full explanation), and this particular mesh (0.2x0.2x0.4 um, 4x4x40
+    cells => 5x1 um lateral:vertical cell aspect ratio at the interface) is
+    numerically stiff for the segregation exchange term at high temperature
+    with the default (coarse) time step, so a small explicit dt is used and
+    a moderate anneal temperature is chosen to stay well inside the linear
+    solver's stable regime for this mesh.
+    """
+    print("test_segregation_dose_loss")
+    sim = cp.Simulation()
+    sim.mesh(0.2, 0.2, 0.4, 4, 4, 40)
+    sim.region("silicon")
+    sim.init("B", 1e18)
+
+    # Si region as it exists before oxidation (with a small margin to avoid
+    # counting the sliver of silicon consumed by the oxide growth itself).
+    z_si_before = sim.bbox()[1][2]
+    z_margin = 0.02e-4  # 0.02 um, 2 cell heights
+    cent0 = sim.cell_centroids * 1e-4  # -> cm
+    vol0 = sim.cell_volumes
+    b0 = sim.field("B")
+    si_mask0 = cent0[:, 2] <= z_si_before - z_margin
+    si_dose0 = float(np.sum(b0[si_mask0] * vol0[si_mask0]))
+    total0 = float(np.sum(b0 * vol0))
+
+    sim.oxidize(30, 1000)
+    sim.diffuse(30, 1050, dt=5.0 / 60.0)
+
+    cent1 = sim.cell_centroids * 1e-4
+    vol1 = sim.cell_volumes
+    b1 = sim.field("B")
+    si_mask1 = cent1[:, 2] <= z_si_before - z_margin
+    si_dose1 = float(np.sum(b1[si_mask1] * vol1[si_mask1]))
+    total1 = float(np.sum(b1 * vol1))
+
+    si_loss = (si_dose0 - si_dose1) / si_dose0
+    total_change = abs(total1 - total0) / total0
+    print(f"  si_dose0={si_dose0:.6g} si_dose1={si_dose1:.6g} "
+          f"loss={100 * si_loss:.3g}%  total_change={100 * total_change:.3g}%")
+    check(si_loss > 0.02, "B dose in the pre-oxidation Si region drops "
+          "measurably (segregation into the oxide)")
+    check(total_change < 0.01, "total (Si+oxide) B dose is conserved "
+          "within 1% across oxidize+diffuse")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -519,4 +570,5 @@ if __name__ == "__main__":
     test_deck_equivalence()
     test_geometry_chain()
     test_save_and_fields()
+    test_segregation_dose_loss()
     print("\nall comprehensive Simulation tests passed")

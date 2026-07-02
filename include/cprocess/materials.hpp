@@ -31,6 +31,16 @@ struct Dopant {
   // Approximate projected range table {energy keV, Rp cm, dRp cm};
   // override with rp=/drp= in the deck for accurate work.
   std::vector<std::array<double, 3>> range;
+
+  // ── Si/SiO2 interface segregation (P1-4) ──
+  // Equilibrium segregation coefficient m(T) = C_si / C_ox at the interface:
+  //   m(T) = seg_m0 * exp(-seg_e / kT)
+  // Interface transport coefficient (cm/s):
+  //   h(T) = seg_h0 * exp(-seg_he / kT)
+  double seg_m0 = 10.0, seg_e = 0.0;    // default: Si-favoring, T-independent
+  double seg_h0 = 1.0e5, seg_he = 2.0;  // ~1.2e-3 cm/s at 1000 C
+  // Diffusivity in SiO2 (plain Arrhenius, cm^2/s): D_ox = dox0*exp(-eox/kT)
+  double dox0 = 0.0, eox = 0.0;         // 0 => immobile inside oxide
 };
 
 // Case-insensitive lookup by name or symbol ("B", "boron", ...); nullptr if
@@ -62,5 +72,10 @@ double interstitial_recomb_rate(double temp_k);
 // Interpolates the range table (linear in log E). Returns false if the
 // dopant has no table; clamps outside the tabulated energy range.
 bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp);
+
+// ── Si/SiO2 interface segregation accessors (P1-4) ──
+double segregation_m(const Dopant& d, double temp_k);     // seg_m0*exp(-seg_e/kT)
+double segregation_h(const Dopant& d, double temp_k);     // seg_h0*exp(-seg_he/kT)
+double oxide_diffusivity(const Dopant& d, double temp_k); // dox0*exp(-eox/kT); 0 if dox0<=0
 
 }  // namespace cp

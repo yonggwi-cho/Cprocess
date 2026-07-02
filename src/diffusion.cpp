@@ -14,11 +14,22 @@ const double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 
 DiffusionSolver::DiffusionSolver(const Mesh& mesh, std::vector<char> solve_mask,
-                                 std::ostream* log)
+                                 std::ostream* log, std::vector<int> cell_mat)
     : mesh_(mesh), mask_(std::move(solve_mask)), log_(log) {
-  if (mask_.empty()) mask_.assign(mesh_.cells.size(), 1);
-  if (mask_.size() != mesh_.cells.size())
-    throw std::runtime_error("diffusion: mask size mismatch");
+  const int nc = static_cast<int>(mesh_.cells.size());
+  if (!cell_mat.empty()) {
+    if (static_cast<int>(cell_mat.size()) != nc)
+      throw std::runtime_error("diffusion: cell_mat size mismatch");
+    mat_ = std::move(cell_mat);
+    mask_.assign(nc, 0);
+    for (int i = 0; i < nc; ++i) mask_[i] = (mat_[i] == 0 || mat_[i] == 1) ? 1 : 0;
+  } else {
+    if (mask_.empty()) mask_.assign(nc, 1);
+    if (static_cast<int>(mask_.size()) != nc)
+      throw std::runtime_error("diffusion: mask size mismatch");
+    mat_.assign(nc, 0);
+    for (int i = 0; i < nc; ++i) mat_[i] = mask_[i] ? 0 : 2;
+  }
   build();
 }
 
@@ -27,13 +38,16 @@ void DiffusionSolver::build() {
   const int nf = static_cast<int>(mesh_.faces.size());
   fg_.assign(nf, FGeom{});
   clamped_faces_ = 0;
+  has_segregation_ = false;
 
   for (int fi = 0; fi < nf; ++fi) {
     const Face& f = mesh_.faces[fi];
     const bool mo = mask_[f.owner];
     const bool mn = f.neigh >= 0 && mask_[f.neigh];
     FGeom& g = fg_[fi];
-    if (mo && mn) {
+    const bool sameMat = mo && mn && mat_[f.owner] == mat_[f.neigh];
+    const bool isSeg = mo && mn && mat_[f.owner] != mat_[f.neigh];
+    if (sameMat) {
       g.kind = kInternal;
       const Vec3 d = mesh_.cell_cent[f.neigh] - mesh_.cell_cent[f.owner];
       const double sn = norm(f.S), dn = norm(d);
@@ -50,6 +64,10 @@ void DiffusionSolver::build() {
       g.delP = std::max(std::fabs(dot(f.c - mesh_.cell_cent[f.owner], nh)), 1e-3 * dn);
       g.delN = std::max(std::fabs(dot(mesh_.cell_cent[f.neigh] - f.c, nh)), 1e-3 * dn);
       g.wP = g.delN / (g.delP + g.delN);
+    } else if (isSeg) {
+      g.kind = kSegregation;
+      g.area = norm(f.S);
+      has_segregation_ = true;
     } else if (mo) {
       g.kind = kBoundOwner;
       const Vec3 db = f.c - mesh_.cell_cent[f.owner];
@@ -64,7 +82,7 @@ void DiffusionSolver::build() {
   // CSR pattern: one row per cell; masked cells keep an identity row.
   std::vector<std::vector<int>> nb(nc);
   for (int fi = 0; fi < nf; ++fi) {
-    if (fg_[fi].kind != kInternal) continue;
+    if (fg_[fi].kind != kInternal && fg_[fi].kind != kSegregation) continue;
     const Face& f = mesh_.faces[fi];
     nb[f.owner].push_back(f.neigh);
     nb[f.neigh].push_back(f.owner);
@@ -87,7 +105,7 @@ void DiffusionSolver::build() {
   for (int i = 0; i < nc; ++i) diag_[i] = A_.find(i, i);
   fslot_.assign(nf, {-1, -1});
   for (int fi = 0; fi < nf; ++fi) {
-    if (fg_[fi].kind != kInternal) continue;
+    if (fg_[fi].kind != kInternal && fg_[fi].kind != kSegregation) continue;
     const Face& f = mesh_.faces[fi];
     fslot_[fi] = {A_.find(f.owner, f.neigh), A_.find(f.neigh, f.owner)};
   }
@@ -98,18 +116,19 @@ void DiffusionSolver::build() {
   // disjoint cell rows, so parallel scatter-add needs no atomics.
   //
   // A face contributes to a cell row iff it writes that cell's diagonal/rhs:
-  //   kInternal   -> owner and neigh
-  //   kBoundOwner -> owner only
+  //   kInternal, kSegregation -> owner and neigh
+  //   kBoundOwner             -> owner only
   // (kBoundNeigh / kInactive touch no active row and are skipped.)
   auto writes_cells = [&](int fi, int& c0, int& c1) {
     const Face& f = mesh_.faces[fi];
     c0 = f.owner;
-    c1 = (fg_[fi].kind == kInternal) ? f.neigh : -1;
+    c1 = (fg_[fi].kind == kInternal || fg_[fi].kind == kSegregation) ? f.neigh : -1;
   };
   std::vector<std::vector<int>> cell_faces(nc);
   std::vector<int> active_faces;
   for (int fi = 0; fi < nf; ++fi) {
-    if (fg_[fi].kind != kInternal && fg_[fi].kind != kBoundOwner) continue;
+    if (fg_[fi].kind != kInternal && fg_[fi].kind != kBoundOwner &&
+        fg_[fi].kind != kSegregation) continue;
     int c0, c1;
     writes_cells(fi, c0, c1);
     cell_faces[c0].push_back(fi);
@@ -248,6 +267,7 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
                                const std::vector<double>& bcface,
                                const std::vector<double>& cgrad, double dt,
                                double reaction, bool nonortho,
+                               double h_seg, double m_seg,
                                std::vector<double>& rhs, std::vector<Vec3>& grad) {
   const int nc = static_cast<int>(mesh_.cells.size());
   gradients(cgrad, bcface, grad);
@@ -293,6 +313,20 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
         const double tb = dcell[f.owner] * g.gb;
         A_.val[diag_[f.owner]] += tb;
         rhs[f.owner] += tb * bcface[fi];
+      } else if (g.kind == kSegregation && h_seg > 0) {
+        // owner/neigh may be Si or oxide in either order; identify iS (Si)
+        // and iO (oxide) via mat_, and pick the fslot_ slots accordingly.
+        const bool ownerIsSi = mat_[f.owner] == 0;
+        const int iS = ownerIsSi ? f.owner : f.neigh;
+        const int iO = ownerIsSi ? f.neigh : f.owner;
+        const double hA = h_seg * g.area;
+        // fslot_[fi][0] is the (owner,neigh) slot, [1] is (neigh,owner).
+        const int s_S_to_O = ownerIsSi ? fslot_[fi][0] : fslot_[fi][1];
+        const int s_O_to_S = ownerIsSi ? fslot_[fi][1] : fslot_[fi][0];
+        A_.val[diag_[iS]]  += hA;
+        A_.val[s_S_to_O]   -= hA * m_seg;
+        A_.val[diag_[iO]]  += hA * m_seg;
+        A_.val[s_O_to_S]   -= hA;
       }
     }
   }
@@ -352,7 +386,9 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
     double maxrel = 0;
     for (picard = 1; picard <= o.max_picard; ++picard) {
       // n/ni from charge neutrality with the current iterate of all species.
+      // Oxide cells carry no free carriers relevant to this model: nni=1.
       for (int i = 0; i < nc; ++i) {
+        if (mat_[i] != 0) { nni[i] = 1.0; continue; }
         double nnet = 0;
         for (int s = 0; s < ns; ++s) {
           const double c = (*fields[s].conc)[i];
@@ -366,6 +402,7 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         const Dopant& dp = *fields[s].dopant;
         for (int i = 0; i < nc; ++i) {
           if (!mask_[i]) { dcell[s][i] = 0; continue; }
+          if (mat_[i] == 1) { dcell[s][i] = oxide_diffusivity(dp, o.temp); continue; }
           double dv = dopant_diffusivity(dp, o.temp, nni[i]);
           if (o.field_enh) {
             const bool ntype = nni[i] >= 1.0;
@@ -381,13 +418,24 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
 
       maxrel = 0;
       for (int s = 0; s < ns; ++s) {
+        const Dopant& dp = *fields[s].dopant;
         std::vector<double>& c = *fields[s].conc;
-        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, rhs, grad);
+        const double h_seg = has_segregation_ ? segregation_h(dp, o.temp) : 0.0;
+        const double m_seg = segregation_m(dp, o.temp);
+        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, h_seg,
+                 m_seg, rhs, grad);
 
         x = c;  // warm start
         // ILU(0)-preconditioned CG (parallel, level-scheduled triangular solves)
-        // with a BiCGSTAB fallback for the occasional non-SPD assembly.
-        SolveResult sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+        // with a BiCGSTAB fallback for the occasional non-SPD assembly. The
+        // segregation cross-terms make the matrix non-symmetric when m != 1,
+        // so skip straight to BiCGSTAB in that case.
+        SolveResult sr;
+        if (has_segregation_ && h_seg > 0) {
+          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+        } else {
+          sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+        }
         if (!sr.converged) {
           x = c;
           sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
@@ -515,7 +563,8 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
 
     // ── 1. Advance the interstitial excess one implicit step (linear). ──
     psi_old = psi;
-    assemble(dI, psi_old, psi_bcface, psi_old, dt, k_rec, o.nonortho, rhs, grad);
+    assemble(dI, psi_old, psi_bcface, psi_old, dt, k_rec, o.nonortho, 0.0, 0.0,
+             rhs, grad);
     x = psi;
     SolveResult sp = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
     if (!sp.converged) { x = psi; bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit); }
@@ -544,6 +593,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
 
       for (int picard = 1; picard <= o.max_picard; ++picard) {
         for (int i = 0; i < nc; ++i) {
+          if (mat_[i] != 0) { nni[i] = 1.0; continue; }
           double nnet = 0;
           for (int s = 0; s < ns; ++s) {
             const double c = (*fields[s].conc)[i];
@@ -556,6 +606,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
           const Dopant& dp = *fields[s].dopant;
           for (int i = 0; i < nc; ++i) {
             if (!mask_[i]) { dcell[s][i] = 0; continue; }
+            if (mat_[i] == 1) { dcell[s][i] = oxide_diffusivity(dp, o.temp); continue; }
             double dv = dopant_diffusivity(dp, o.temp, nni[i]);
             if (o.field_enh) {
               const bool ntype = nni[i] >= 1.0;
@@ -573,10 +624,19 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
 
         double maxrel = 0;
         for (int s = 0; s < ns; ++s) {
+          const Dopant& dp = *fields[s].dopant;
           std::vector<double>& c = *fields[s].conc;
-          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, rhs, grad);
+          const double h_seg = has_segregation_ ? segregation_h(dp, o.temp) : 0.0;
+          const double m_seg = segregation_m(dp, o.temp);
+          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, h_seg,
+                   m_seg, rhs, grad);
           x = c;
-          SolveResult sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          SolveResult sr;
+          if (has_segregation_ && h_seg > 0) {
+            sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          } else {
+            sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          }
           if (!sr.converged) {
             x = c;
             sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);

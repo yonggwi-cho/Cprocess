@@ -131,6 +131,21 @@ std::vector<char> silicon_mask(const SimState& st) {
   return mask;
 }
 
+// 0 = silicon (or untagged), 1 = oxide/sio2, 2 = everything else
+std::vector<int> material_ids(const SimState& st) {
+  std::vector<int> mat(st.mesh.cells.size(), 0);
+  for (std::size_t i = 0; i < st.mesh.cells.size(); ++i) {
+    auto it = st.region_material.find(st.mesh.cell_region[i]);
+    if (it == st.region_material.end() || is_silicon(it->second)) {
+      mat[i] = 0;
+    } else {
+      const std::string ml = lower(it->second);
+      mat[i] = (ml == "oxide" || ml == "sio2") ? 1 : 2;
+    }
+  }
+  return mat;
+}
+
 int resolve_region(const SimState& st, const std::string& v) {
   char* end = nullptr;
   const long tag = std::strtol(v.c_str(), &end, 10);
@@ -705,7 +720,7 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
-  DiffusionSolver solver(st.mesh, silicon_mask(st), log);
+  DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
   solver.run(fields, st.bcs, opts);
   st.last_temp = opts.temp;
 }
@@ -731,7 +746,7 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
-  DiffusionSolver solver(st.mesh, silicon_mask(st), log);
+  DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
   solver.run_ted(fields, psi, st.bcs, opts);
   st.last_temp = opts.temp;
 }
