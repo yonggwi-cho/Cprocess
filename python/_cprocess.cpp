@@ -421,6 +421,10 @@ PYBIND11_MODULE(_cprocess, m) {
       py::arg("x1") = 0.0, py::arg("x2") = 0.0, py::arg("y1") = 0.0,
       py::arg("y2") = 0.0, py::arg("damage") = false);
 
+  // damage=True seeds the "I" field: with channeling=True from the MC's own
+  // Kinchin-Pease damage array (x kFrenkelSurvival, capped at
+  // kAmorphizationDensity); with channeling=False, falls back to the "+1"
+  // model (no MC damage exists without channeling).
   m.def("proc_implant_mc",
       [](SimState& st, const std::string& species, double dose,
          double energy_kev, long long ions, double tilt_deg, double rotation_deg,

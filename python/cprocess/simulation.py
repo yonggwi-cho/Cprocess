@@ -135,8 +135,12 @@ class Simulation:
         `window=(x1,x2,y1,y2)` in micrometres restricts a geometric mask; for a
         *physical* resist mask use photo()/mask() instead. If a resist stack is
         present, an MC implant automatically transports through it.
-        `damage=True` seeds excess self-interstitials ("+1" model) into the "I"
-        field, which diffuse(ted=True) then uses for transient enhanced diffusion.
+        `damage=True` seeds excess self-interstitials into the "I" field, which
+        diffuse(ted=True) then uses for transient enhanced diffusion. For
+        `mc=True` with `channeling=True`, the seed comes from the MC's own
+        Kinchin-Pease damage field (x kFrenkelSurvival, capped at
+        kAmorphizationDensity); otherwise (Gaussian, or MC without channeling)
+        the "+1" model is used (dopant profile copied into "I").
         """
         has_window = window is not None
         x1, x2, y1, y2 = (window if has_window else (0, 0, 0, 0))

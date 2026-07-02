@@ -120,6 +120,18 @@ void seed_interstitials(SimState& st, const std::vector<double>& before,
   }
 }
 
+// Seed the interstitial excess from the MC Kinchin-Pease damage field:
+//   I += kFrenkelSurvival * damage, capped at kAmorphizationDensity.
+void seed_interstitials_from_damage(SimState& st,
+                                    const std::vector<double>& damage) {
+  auto& I = st.fields["I"];
+  I.resize(st.mesh.cells.size(), 0.0);
+  for (std::size_t i = 0; i < damage.size() && i < I.size(); ++i) {
+    I[i] += kFrenkelSurvival * damage[i];
+    I[i] = std::min(I[i], kAmorphizationDensity);
+  }
+}
+
 }  // namespace
 
 std::vector<char> silicon_mask(const SimState& st) {
@@ -259,6 +271,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
   auto& f = st.fields[dop->symbol];
   f.resize(st.mesh.cells.size(), 0.0);
   const std::vector<double> before = seed_damage ? f : std::vector<double>{};
+  const bool use_damage = seed_damage && channeling;
 
   McImplantParams p;
   p.dopant = dop;
@@ -286,13 +299,20 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
     p.cell_material = &st.stack_cell_mat;
 
     std::vector<double> stack_conc(nc_s, 0.0);
-    const McImplantStats s =
-        apply_mc_implant(st.stack, stack_si, p, stack_conc, nullptr);
+    std::vector<double> stack_dmg;
+    const McImplantStats s = apply_mc_implant(
+        st.stack, stack_si, p, stack_conc, use_damage ? &stack_dmg : nullptr);
 
     const std::vector<double> transferred =
         transfer_field_nearest(st.stack, stack_conc, st.mesh);
     for (std::size_t i = 0; i < f.size(); ++i) f[i] += transferred[i];
-    if (seed_damage) seed_interstitials(st, before, f);
+    if (use_damage) {
+      const std::vector<double> dmg_transferred =
+          transfer_field_nearest(st.stack, stack_dmg, st.mesh);
+      seed_interstitials_from_damage(st, dmg_transferred);
+    } else if (seed_damage) {
+      seed_interstitials(st, before, f);
+    }
 
     if (log) {
       const double n = static_cast<double>(p.ions);
@@ -300,17 +320,45 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
            << fmt("%.4g", p.energy_kev) << " keV, deposited_in_Si="
            << fmt("%.1f", 100.0 * s.deposited / n) << "%, stopped_in_resist="
            << fmt("%.1f", 100.0 * s.in_mask / n) << "%\n";
+      if (seed_damage) {
+        if (use_damage) {
+          double peak = 0.0;
+          for (double v : st.fields["I"]) peak = std::max(peak, v);
+          *log << "[implant] damage seed: peak I=" << fmt("%.3g", peak)
+               << " cm^-3 (KP damage x " << fmt("%.3g", kFrenkelSurvival)
+               << ")\n";
+        } else {
+          *log << "[implant] damage: '+1' model (channeling off)\n";
+        }
+      }
     }
     return s;
   }
 
-  const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f);
-  if (seed_damage) seed_interstitials(st, before, f);
+  std::vector<double> dmg;
+  const McImplantStats s = apply_mc_implant(st.mesh, silicon_mask(st), p, f,
+                                            use_damage ? &dmg : nullptr);
+  if (use_damage) {
+    seed_interstitials_from_damage(st, dmg);
+  } else if (seed_damage) {
+    seed_interstitials(st, before, f);
+  }
   if (log) {
     const double n = static_cast<double>(p.ions);
     *log << "[implant] " << dop->symbol << " MC: E=" << fmt("%.4g", p.energy_kev)
          << " keV, deposited " << fmt("%.1f", 100.0 * s.deposited / n)
          << "% (Rp=" << fmt("%.4g", s.rp * 1e4) << " um)\n";
+    if (seed_damage) {
+      if (use_damage) {
+        double peak = 0.0;
+        for (double v : st.fields["I"]) peak = std::max(peak, v);
+        *log << "[implant] damage seed: peak I=" << fmt("%.3g", peak)
+             << " cm^-3 (KP damage x " << fmt("%.3g", kFrenkelSurvival)
+             << ")\n";
+      } else {
+        *log << "[implant] damage: '+1' model (channeling off)\n";
+      }
+    }
   }
   return s;
 }

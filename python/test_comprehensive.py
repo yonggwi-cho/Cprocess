@@ -341,6 +341,35 @@ def test_ted_interstitial_field():
     check("I" not in sim2.field_names(), "no interstitials without damage=True")
 
 
+def test_mc_damage_seed():
+    """MC implant with channeling + damage seeds 'I' from KP damage (P1-2)."""
+    print("test_mc_damage_seed")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=0.5, nx=4, ny=4, nz=50)
+    sim.region("silicon")
+    r = sim.implant("B", dose=1e14, energy=50, mc=True, ions=50000,
+                    channeling=True, damage=True, threads=1, seed=1)
+    check("I" in sim.field_names(), "'I' field present after MC damage implant")
+    I = sim.field("I")
+    check(I.max() > 0, "MC damage seeded interstitials")
+    check(I.max() <= 6.25e21, "I capped at amorphization density")
+
+    # Damage (I) peaks shallower than the dopant (B): mean depth of I < B.
+    B = sim.field("B")
+    vol = sim.cell_volumes
+    z = sim.cell_centroids[:, 2]
+    ztop = z.max()
+    depth = ztop - z
+    dI = float((I * vol * depth).sum() / (I * vol).sum())
+    dB = float((B * vol * depth).sum() / (B * vol).sum())
+    print(f"  mean depth I={dI:.4f} um, B={dB:.4f} um")
+    check(dI < dB, "I profile shallower than dopant profile")
+
+    # TED anneal runs to completion on the MC-seeded field.
+    sim.diffuse(time=1, temp=900, ted=True)
+    check(np.all(np.isfinite(sim.field("B"))), "B finite after MC-seeded TED anneal")
+
+
 # ---------------------------------------------------------------------------
 def test_error_paths():
     """Error paths should raise, not silently misbehave."""
@@ -666,6 +695,7 @@ if __name__ == "__main__":
     test_oxidize_wet_faster()
     test_ted_enhancement()
     test_ted_interstitial_field()
+    test_mc_damage_seed()
     test_error_paths()
     test_ted_flow_python()
     test_deck_equivalence()

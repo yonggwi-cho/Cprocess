@@ -7,6 +7,17 @@ namespace cp {
 
 constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
+// Fraction of Kinchin-Pease Frenkel pairs surviving in-cascade
+// recombination; the survivors seed the excess-interstitial field for TED
+// (cf. "+1" model: net excess ~ dose, i.e. ~1% of total displacements).
+constexpr double kFrenkelSurvival = 0.01;
+
+// Displacement density at which crystalline Si is fully amorphized
+// [cm^-3] (~12.5% of the atomic density). Also caps the seeded
+// interstitial excess: cells at the cap are amorphous and their TED
+// physics differs, but capping keeps the free supersaturation bounded.
+constexpr double kAmorphizationDensity = 6.25e21;
+
 enum class DopType { donor, acceptor };
 
 // Per-cell material id (P1-9). 0/1 stay compatible with the P1-4 cell_mat

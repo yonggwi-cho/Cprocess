@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "cprocess/materials.hpp"
 #include "cprocess/process.hpp"
 #include "test_util.hpp"
 
@@ -18,6 +19,18 @@ static double profile_spread(const SimState& st, const std::vector<double>& c) {
   if (m <= 0) return 0;
   const double mean = mz / m;
   return std::sqrt(std::max(0.0, mz2 / m - mean * mean));
+}
+
+// Mass-weighted mean depth (surface = ztop, depth increases downward).
+static double mean_depth(const SimState& st, const std::vector<double>& c) {
+  const BBox bb = st.mesh.bbox();
+  double m = 0, md = 0;
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    const double w = c[i] * st.mesh.cell_vol[i];
+    const double depth = bb.hi.z - st.mesh.cell_cent[i].z;
+    m += w; md += w * depth;
+  }
+  return (m > 0) ? md / m : 0.0;
 }
 
 // Build a shallow boron implant near the surface and return the state.
@@ -108,6 +121,100 @@ int main() {
     std::printf("pair-diffusion: B enh +%.4g um, As enh +%.4g um\n",
                 db * 1e4, da * 1e4);
     CHECK(db > da);  // interstitial-dominated B feels TED more than As
+  }
+
+  // --- 4. MC damage seeding: I peak is shallower than dopant Rp. ---
+  {
+    SimState st;
+    proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+    proc::set_region(st, "silicon", -1);
+    proc::implant_mc(st, "B", 1e14, 50.0, 200000, 0.0, 0.0, 1, 1,
+                     /*channeling=*/true, false, 0, 0, 0, 0,
+                     /*seed_damage=*/true);
+    CHECK(st.fields.count("I") == 1);
+    const double dI = mean_depth(st, st.fields.at("I"));
+    const double dB = mean_depth(st, st.fields.at("B"));
+    std::printf("mc damage: mean_depth(I)=%.4g um, mean_depth(B)=%.4g um\n",
+                dI * 1e4, dB * 1e4);
+    CHECK(dI < dB);
+  }
+
+  // --- 5. I integral scales ~linearly with dose. ---
+  {
+    auto total_I = [](double dose) {
+      SimState st;
+      proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+      proc::set_region(st, "silicon", -1);
+      proc::implant_mc(st, "B", dose, 50.0, 200000, 0.0, 0.0, 1, 1,
+                       /*channeling=*/true, false, 0, 0, 0, 0,
+                       /*seed_damage=*/true);
+      double sum = 0;
+      const auto& I = st.fields.at("I");
+      for (std::size_t i = 0; i < I.size(); ++i) sum += I[i] * st.mesh.cell_vol[i];
+      return sum;
+    };
+    const double i1 = total_I(1e14);
+    const double i2 = total_I(2e14);
+    const double ratio = i2 / i1;
+    std::printf("mc damage dose scaling: I(1e14)=%.4g, I(2e14)=%.4g, ratio=%.3f\n",
+                i1, i2, ratio);
+    CHECK(ratio >= 1.8 && ratio <= 2.2);
+  }
+
+  // --- 6. MC-seeded TED still enhances diffusion vs. equilibrium. ---
+  {
+    SimState st_eq, st_ted;
+    proc::mesh_box(st_eq, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+    proc::set_region(st_eq, "silicon", -1);
+    proc::implant_mc(st_eq, "B", 1e14, 20.0, 100000, 0.0, 0.0, 1, 1,
+                     /*channeling=*/true, false, 0, 0, 0, 0,
+                     /*seed_damage=*/false);
+    const double s0_eq = profile_spread(st_eq, st_eq.fields.at("B"));
+    proc::diffuse(st_eq, base);
+    const double spread_eq_mc = profile_spread(st_eq, st_eq.fields.at("B"));
+
+    proc::mesh_box(st_ted, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+    proc::set_region(st_ted, "silicon", -1);
+    proc::implant_mc(st_ted, "B", 1e14, 20.0, 100000, 0.0, 0.0, 1, 1,
+                     /*channeling=*/true, false, 0, 0, 0, 0,
+                     /*seed_damage=*/true);
+    const double s0_ted = profile_spread(st_ted, st_ted.fields.at("B"));
+    proc::diffuse_ted(st_ted, base);
+    const double spread_ted_mc = profile_spread(st_ted, st_ted.fields.at("B"));
+
+    std::printf("mc ted: eq %.4g -> %.4g um, ted %.4g -> %.4g um\n",
+                s0_eq * 1e4, spread_eq_mc * 1e4, s0_ted * 1e4, spread_ted_mc * 1e4);
+    CHECK(spread_ted_mc > 1.3 * spread_eq_mc);
+  }
+
+  // --- 7. Seed cap: I never exceeds kAmorphizationDensity. ---
+  {
+    SimState st;
+    proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+    proc::set_region(st, "silicon", -1);
+    proc::implant_mc(st, "B", 1e16, 50.0, 100000, 0.0, 0.0, 1, 1,
+                     /*channeling=*/true, false, 0, 0, 0, 0,
+                     /*seed_damage=*/true);
+    double maxI = 0;
+    for (double v : st.fields.at("I")) maxI = std::max(maxI, v);
+    std::printf("mc damage cap: max(I)=%.4g cm^-3 (cap=%.4g)\n",
+                maxI, kAmorphizationDensity);
+    CHECK(maxI <= kAmorphizationDensity * (1 + 1e-12));
+  }
+
+  // --- 8. Non-channeling MC falls back to "+1" model (I still seeded). ---
+  {
+    SimState st;
+    proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, 0.5e-4, 4, 4, 50);
+    proc::set_region(st, "silicon", -1);
+    proc::implant_mc(st, "B", 1e14, 50.0, 50000, 0.0, 0.0, 1, 1,
+                     /*channeling=*/false, false, 0, 0, 0, 0,
+                     /*seed_damage=*/true);
+    CHECK(st.fields.count("I") == 1);
+    double Ipeak = 0;
+    for (double v : st.fields.at("I")) Ipeak = std::max(Ipeak, v);
+    std::printf("mc no-channeling fallback: Ipeak=%.4g\n", Ipeak);
+    CHECK(Ipeak > 0);
   }
 
   std::printf("ted tests passed\n");

@@ -36,7 +36,6 @@ constexpr double ke2evcm = 14.3996e-8; // e^2 [eV·cm]
 
 // Radiation damage.
 constexpr double kEdSi     = 15.0;     // Si displacement threshold [eV]
-constexpr double kNamorph  = 6.25e21;  // amorphization density [cm^-3] (~0.125*kNt)
 
 std::uint64_t splitmix64(std::uint64_t x) {
   x += 0x9E3779B97F4A7C15ull;
@@ -201,7 +200,7 @@ Vec3 deflect(const Vec3& d, double cpsi, double spsi, double phi) {
 //
 // C_L²=3 (Andersen-Feldman), a_s=ZBL screening length, d_row=row spacing.
 // Channeling criterion per step: E·sin²ψ < U_max·(1-f_amor), where
-// U_max=U(u₁) and f_amor=damage_density/kNamorph smoothly degrades the
+// U_max=U(u₁) and f_amor=damage_density/kAmorphizationDensity smoothly degrades the
 // crystal as displacement damage accumulates.
 // ---------------------------------------------------------------------------
 
@@ -255,7 +254,7 @@ struct DamageStore {
 #pragma omp atomic read
     cnt = counts[ci];
     const double dens = cnt * weight / (*cell_vol)[ci];
-    return std::min(1.0, dens / kNamorph);
+    return std::min(1.0, dens / kAmorphizationDensity);
   }
 };
 

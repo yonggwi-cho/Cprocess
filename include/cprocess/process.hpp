@@ -46,6 +46,10 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
 // Monte Carlo (BCA) implant. When a photoresist stack is present (after
 // photo()), transport runs through the full physical stack and the profile is
 // transferred back onto the working mesh.
+// seed_damage=true && channeling=true seeds the "I" field from the MC's own
+// Kinchin-Pease damage array x kFrenkelSurvival (capped at
+// kAmorphizationDensity); channeling=false falls back to the "+1" model
+// (no MC damage is produced without channeling).
 McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                           double energy_kev, long long ions, double tilt_deg,
                           double rotation_deg, unsigned long long seed,
