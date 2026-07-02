@@ -2,6 +2,10 @@
 #include <cstdio>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include "cprocess/sparse.hpp"
 #include "test_util.hpp"
 
@@ -17,6 +21,27 @@ static CSR laplacian1d(int n) {
     a.col.push_back(i); a.val.push_back(2.0);
     if (i < n - 1) { a.col.push_back(i + 1); a.val.push_back(-1.0); }
     a.ptr.push_back(static_cast<int>(a.col.size()));
+  }
+  return a;
+}
+
+// 2D 5-point Laplacian on an nx*ny grid (SPD), row-major node ordering.
+// Wide bandwidth gives level scheduling real parallelism (unlike the
+// tridiagonal 1D case, whose rows form a strictly sequential chain).
+static CSR laplacian2d(int nx, int ny) {
+  CSR a;
+  a.n = nx * ny;
+  a.ptr.push_back(0);
+  for (int iy = 0; iy < ny; ++iy) {
+    for (int ix = 0; ix < nx; ++ix) {
+      const int i = iy * nx + ix;
+      if (iy > 0) { a.col.push_back(i - nx); a.val.push_back(-1.0); }
+      if (ix > 0) { a.col.push_back(i - 1); a.val.push_back(-1.0); }
+      a.col.push_back(i); a.val.push_back(4.0);
+      if (ix < nx - 1) { a.col.push_back(i + 1); a.val.push_back(-1.0); }
+      if (iy < ny - 1) { a.col.push_back(i + nx); a.val.push_back(-1.0); }
+      a.ptr.push_back(static_cast<int>(a.col.size()));
+    }
   }
   return a;
 }
@@ -85,6 +110,49 @@ int main() {
   r = cg_jacobi(a, zb, x, 1e-12, 100);
   CHECK(r.converged);
   for (int i = 0; i < n; ++i) CHECK(x[i] == 0.0);
+
+  // Level-parallel ILU(0) factorization: bit-identical results at thread
+  // counts 1 and 4 on a 2D 5-point Laplacian, whose bandwidth gives level
+  // scheduling real parallelism.
+  {
+    const int nx = 50, ny = 50;
+    CSR a2 = laplacian2d(nx, ny);
+
+#ifdef _OPENMP
+    omp_set_num_threads(1);
+#endif
+    ILU0 ilu1;
+    ilu1.factor(a2);
+
+#ifdef _OPENMP
+    omp_set_num_threads(4);
+#endif
+    ILU0 ilu4;
+    ilu4.factor(a2);
+
+    CHECK(ilu1.lu.val.size() == ilu4.lu.val.size());
+    for (size_t k = 0; k < ilu1.lu.val.size(); ++k)
+      CHECK(ilu1.lu.val[k] == ilu4.lu.val[k]);  // bit-identical
+    std::printf("ilu0 factor: bit-identical across thread counts\n");
+
+    // Convergence test on the same 2D Laplacian with a manufactured solution.
+    const int n2 = nx * ny;
+    std::vector<double> xtrue2(n2), b2, x2;
+    for (int i = 0; i < n2; ++i) xtrue2[i] = std::sin(0.1 * i) + 0.5;
+    a2.mul(xtrue2, b2);
+    SolveResult r2 = cg_ilu0(a2, b2, x2, 1e-10, 500);
+    CHECK(r2.converged);
+    double maxerr = 0.0;
+    for (int i = 0; i < n2; ++i)
+      maxerr = std::max(maxerr, std::fabs(x2[i] - xtrue2[i]));
+    CHECK(maxerr < 1e-6);
+    std::printf("cg_ilu0 (2D laplacian, 4 threads): %d iters, resid %.2e, maxerr %.2e\n",
+                r2.iters, r2.resid, maxerr);
+
+#ifdef _OPENMP
+    omp_set_num_threads(1);
+#endif
+  }
 
   std::printf("solver tests passed\n");
   return 0;

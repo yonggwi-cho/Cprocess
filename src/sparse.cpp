@@ -78,30 +78,14 @@ void ILU0::factor(const CSR& A) {
   diag.assign(n, -1);
   for (int i = 0; i < n; ++i) diag[i] = lu.find(i, i);
 
-  // Standard IKJ incomplete LU with no fill-in (values only where A is nonzero).
-  // This setup phase is inherently sequential (row i depends on rows < i).
-  for (int i = 0; i < n; ++i) {
-    for (int kk = lu.ptr[i]; kk < lu.ptr[i + 1]; ++kk) {
-      const int k = lu.col[kk];
-      if (k >= i) break;  // columns are sorted; L part is k < i
-      const int dk = diag[k];
-      if (dk < 0 || lu.val[dk] == 0.0) continue;
-      const double lik = lu.val[kk] / lu.val[dk];
-      lu.val[kk] = lik;
-      // Update the rest of row i: a_ij -= lik * u_kj for j > k that exist in i.
-      int jj = kk + 1;
-      for (int pk = dk + 1; pk < lu.ptr[k + 1] && jj < lu.ptr[i + 1]; ++pk) {
-        const int j = lu.col[pk];
-        while (jj < lu.ptr[i + 1] && lu.col[jj] < j) ++jj;
-        if (jj < lu.ptr[i + 1] && lu.col[jj] == j)
-          lu.val[jj] -= lik * lu.val[pk];
-      }
-    }
-  }
-
   // Level scheduling. lower solve: row i depends on rows j<i with L_ij!=0.
   // upper solve: row i depends on rows j>i with U_ij!=0. A row's level is one
   // past the max level of its dependencies; rows in one level are independent.
+  // This depends only on the sparsity pattern of A, so it can be computed
+  // before the factorization values are known. The lower-solve dependency
+  // graph (row i depends on rows k<i with a_ik != 0) is exactly the IKJ
+  // factorization's dependency graph, so lvl_lo also drives the parallel
+  // factorization loop below.
   std::vector<int> lev_lo(n, 0), lev_up(n, 0);
   int nlo = 0, nup = 0;
   for (int i = 0; i < n; ++i) {
@@ -126,6 +110,34 @@ void ILU0::factor(const CSR& A) {
   lvl_up.assign(nup, {});
   for (int i = 0; i < n; ++i) lvl_lo[lev_lo[i]].push_back(i);
   for (int i = 0; i < n; ++i) lvl_up[lev_up[i]].push_back(i);
+
+  // Standard IKJ incomplete LU with no fill-in (values only where A is
+  // nonzero), executed level-by-level. Rows within a level are mutually
+  // independent (their dependencies k < i all lie in earlier levels), and
+  // each row only writes within its own range in `lu`, so this is race-free.
+  for (const auto& level : lvl_lo) {
+    const int m = static_cast<int>(level.size());
+#pragma omp parallel for schedule(dynamic, 16)
+    for (int t = 0; t < m; ++t) {
+      const int i = level[t];
+      for (int kk = lu.ptr[i]; kk < lu.ptr[i + 1]; ++kk) {
+        const int k = lu.col[kk];
+        if (k >= i) break;  // columns are sorted; L part is k < i
+        const int dk = diag[k];
+        if (dk < 0 || lu.val[dk] == 0.0) continue;
+        const double lik = lu.val[kk] / lu.val[dk];
+        lu.val[kk] = lik;
+        // Update the rest of row i: a_ij -= lik * u_kj for j > k that exist in i.
+        int jj = kk + 1;
+        for (int pk = dk + 1; pk < lu.ptr[k + 1] && jj < lu.ptr[i + 1]; ++pk) {
+          const int j = lu.col[pk];
+          while (jj < lu.ptr[i + 1] && lu.col[jj] < j) ++jj;
+          if (jj < lu.ptr[i + 1] && lu.col[jj] == j)
+            lu.val[jj] -= lik * lu.val[pk];
+        }
+      }
+    }
+  }
 }
 
 void ILU0::apply(const std::vector<double>& x, std::vector<double>& y) const {
