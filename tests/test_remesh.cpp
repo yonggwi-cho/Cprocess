@@ -334,6 +334,139 @@ int main() {
     CHECK_NEAR(vol_final, vol_expected, 0.05 * vol_expected);
   }
 
+  // ---- flip_repair: 2-3 flip unit test -------------------------------------
+  {
+    // d, e placed close to the plane (thin two-tet decomposition, low
+    // quality); the flatter 3-tet decomposition around edge (d,e) is a
+    // strict quality improvement here, so the flip is expected to apply.
+    Mesh m;
+    m.nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
+              {0.2327, 0.2315, 0.1895}, {0.2327, 0.2315, -0.1895}};
+    m.cells = {{0, 1, 2, 3}, {0, 1, 2, 4}};
+    m.cell_region = {0, 0};
+    m.finalize();
+    const double vol0 = m.total_volume();
+
+    FlipResult fr = flip_repair(m, 1.0);
+    std::printf("2-3 flip: n_flip23=%d n_flip32=%d cells=%zu\n", fr.n_flip23,
+               fr.n_flip32, m.cells.size());
+    CHECK(fr.n_flip23 == 1);
+    CHECK(m.cells.size() == 3);
+    for (double v : m.cell_vol) CHECK(v > 0);
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+  }
+
+  // ---- flip_repair: 3-2 flip unit test -------------------------------------
+  {
+    Mesh m;
+    m.nodes = {{0, 0, 0}, {1, 0, 0}, {0.5, 1, 0}, {0.3, 0.3, 1}, {0.3, 0.3, -1}};
+    // nodes: a=0, b=1, c=2, d=3, e=4; ring a,b,c around axis edge (d,e).
+    m.cells = {{3, 4, 0, 1}, {3, 4, 1, 2}, {3, 4, 2, 0}};
+    m.cell_region = {0, 0, 0};
+    m.finalize();
+    const double vol0 = m.total_volume();
+
+    FlipResult fr = flip_repair(m, 1.0);
+    std::printf("3-2 flip: n_flip23=%d n_flip32=%d cells=%zu\n", fr.n_flip23,
+               fr.n_flip32, m.cells.size());
+    CHECK(fr.n_flip32 == 1);
+    CHECK(m.cells.size() == 2);
+    for (double v : m.cell_vol) CHECK(v > 0);
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+  }
+
+  // ---- flip_repair: interface protection -----------------------------------
+  {
+    Mesh m;
+    m.nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.3, 0.3, 1}, {0.3, 0.3, -1}};
+    m.cells = {{0, 1, 2, 3}, {0, 1, 2, 4}};
+    m.cell_region = {0, 1};  // different regions -> shared face is an interface
+    m.finalize();
+
+    FlipResult fr = flip_repair(m, 1.0);
+    std::printf("interface protection: n_flip23=%d cells=%zu\n", fr.n_flip23,
+               m.cells.size());
+    CHECK(fr.n_flip23 == 0);
+    CHECK(m.cells.size() == 2);
+  }
+
+  // ---- flip_repair: boundary protection ------------------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 2, 2, 2);
+    const double vol0 = m.total_volume();
+    const BBox bb0 = m.bbox();
+
+    FlipResult fr = flip_repair(m, 1.0);
+    std::printf("boundary protection: n_flip23=%d n_flip32=%d\n", fr.n_flip23,
+               fr.n_flip32);
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+    const BBox bb1 = m.bbox();
+    CHECK(norm(bb1.lo - bb0.lo) < 1e-12);
+    CHECK(norm(bb1.hi - bb0.hi) < 1e-12);
+  }
+
+  // ---- repair_quality with flips: quality improvement regression ----------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 6, 6, 6);
+    const double h = 1.0 / 6.0;
+
+    MeshTopology topo;
+    topo.build(m);
+    const int nn = static_cast<int>(m.nodes.size());
+
+    int node = -1;
+    for (int i = 0; i < nn; ++i) {
+      if (!topo.node_boundary[i] && !topo.node_interface[i] &&
+          !topo.node_adj[i].empty()) { node = i; break; }
+    }
+    CHECK(node >= 0);
+
+    int best_nb = -1;
+    double best_len = 1e300;
+    for (int j : topo.node_adj[node]) {
+      const double len = norm(m.nodes[j] - m.nodes[node]);
+      if (len < best_len) { best_len = len; best_nb = j; }
+    }
+    CHECK(best_nb >= 0);
+
+    const Vec3 dir = (1.0 / best_len) * (m.nodes[best_nb] - m.nodes[node]);
+    m.nodes[node] = m.nodes[node] + (0.95 * h) * dir;
+    m.finalize();
+
+    RepairResult rr = repair_quality(m, 0.1);
+    std::printf("repair_quality+flips: n_flips=%d min_q_after=%.4f\n", rr.n_flips,
+               rr.min_q_after);
+    CHECK(rr.min_q_after > 0.05);
+    CHECK(rr.n_flips >= 0);
+  }
+
+  // ---- flip_repair: field preservation through flips -----------------------
+  {
+    Mesh m;
+    m.nodes = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0},
+              {0.2327, 0.2315, 0.1895}, {0.2327, 0.2315, -0.1895}};
+    m.cells = {{0, 1, 2, 3}, {0, 1, 2, 4}};
+    m.cell_region = {0, 0};
+    m.finalize();
+
+    std::vector<double> field(2, 1e15);
+    double mass0 = 0;
+    for (std::size_t i = 0; i < field.size(); ++i) mass0 += field[i] * m.cell_vol[i];
+
+    std::vector<FlipRemap> remaps;
+    std::vector<std::vector<double>*> fields = {&field};
+    FlipResult fr = flip_repair(m, 1.0, &remaps, &fields);
+    std::printf("field preservation: n_flip23=%d field.size=%zu\n", fr.n_flip23,
+               field.size());
+    CHECK(fr.n_flip23 == 1);
+    CHECK(field.size() == m.cells.size());
+    for (double v : field) CHECK(std::fabs(v - 1e15) < 1e-6 * 1e15);
+
+    double mass1 = 0;
+    for (std::size_t i = 0; i < field.size(); ++i) mass1 += field[i] * m.cell_vol[i];
+    CHECK_NEAR(mass1, mass0, 1e-12 * mass0);
+  }
+
   std::printf("remesh tests passed\n");
   return 0;
 }
