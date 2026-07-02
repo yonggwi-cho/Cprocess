@@ -54,4 +54,22 @@ std::vector<double> redistribute_field(const std::vector<double>& conc,
 // moves applied. The caller must call Mesh::finalize() afterward.
 int laplacian_smooth(Mesh& m, int iters = 5, double omega = 0.5);
 
+struct RepairResult {
+  int n_smoothed = 0;     // nodes moved by smoothing (summed over all passes)
+  int n_split = 0;        // edges split (summed over all rounds)
+  double min_q_before = 0, min_q_after = 0;
+  std::vector<int> cell_parent;  // maps final mesh cell -> original cell index
+                                  // (identity if no splits occurred)
+};
+
+// Repairs cells with quality q < q_thresh by alternating Laplacian smoothing
+// and longest-edge splitting, up to `max_rounds` rounds. Each round: smooth
+// `smooth_iters` sweeps, recheck quality (stop early if no slivers remain),
+// then split the longest edge of every remaining sliver cell and smooth
+// again. Never throws; results (including any residual slivers) are reported
+// via the return value. Does not call ale_move; the caller is responsible for
+// composing this with any prior mesh motion.
+RepairResult repair_quality(Mesh& m, double q_thresh = 0.1, int max_rounds = 3,
+                            int smooth_iters = 5);
+
 }  // namespace cp

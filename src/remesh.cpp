@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <set>
 
 #include "cprocess/topology.hpp"
 
@@ -141,6 +142,70 @@ int laplacian_smooth(Mesh& m, int iters, double omega) {
     }
   }
   return moved;
+}
+
+RepairResult repair_quality(Mesh& m, double q_thresh, int max_rounds,
+                            int smooth_iters) {
+  RepairResult res;
+  res.min_q_before = mesh_quality(m, q_thresh).min_q;
+
+  const int nc0 = static_cast<int>(m.cells.size());
+  res.cell_parent.resize(nc0);
+  std::iota(res.cell_parent.begin(), res.cell_parent.end(), 0);
+
+  QualityStats qs = mesh_quality(m, q_thresh);
+
+  for (int round = 0; round < max_rounds; ++round) {
+    if (qs.n_sliver == 0) break;
+
+    res.n_smoothed += laplacian_smooth(m, smooth_iters, 0.5);
+    m.finalize();
+
+    qs = mesh_quality(m, q_thresh);
+    if (qs.n_sliver == 0) break;
+
+    // Collect the longest edge of every sliver cell, deduplicated.
+    std::vector<std::pair<int, int>> candidates;
+    std::set<std::pair<int, int>> seen;
+    const int nc = static_cast<int>(m.cells.size());
+    for (int ci = 0; ci < nc; ++ci) {
+      const auto& c = m.cells[ci];
+      const double q = tet_quality(m.nodes[c[0]], m.nodes[c[1]], m.nodes[c[2]],
+                                   m.nodes[c[3]]);
+      if (q >= q_thresh) continue;
+      int best = -1;
+      double best_len2 = -1;
+      for (int e = 0; e < 6; ++e) {
+        const int va = c[kEdges[e][0]], vb = c[kEdges[e][1]];
+        const Vec3 d = m.nodes[va] - m.nodes[vb];
+        const double len2 = dot(d, d);
+        if (len2 > best_len2) { best_len2 = len2; best = e; }
+      }
+      int a = c[kEdges[best][0]], b = c[kEdges[best][1]];
+      if (a > b) std::swap(a, b);
+      if (seen.insert({a, b}).second) candidates.push_back({a, b});
+    }
+
+    if (candidates.empty()) break;
+
+    SplitResult sr = split_edges(m, candidates);
+    res.n_split += sr.n_split;
+
+    // Compose cell_parent across rounds: parent_total[i] =
+    // parent_total_prev[result.cell_parent[i]].
+    std::vector<int> composed(sr.cell_parent.size());
+    for (std::size_t i = 0; i < sr.cell_parent.size(); ++i)
+      composed[i] = res.cell_parent[sr.cell_parent[i]];
+    res.cell_parent = std::move(composed);
+
+    res.n_smoothed += laplacian_smooth(m, smooth_iters, 0.5);
+    m.finalize();
+
+    qs = mesh_quality(m, q_thresh);
+  }
+
+  res.min_q_after = mesh_quality(m, q_thresh).min_q;
+  return res;
 }
 
 }  // namespace cp
