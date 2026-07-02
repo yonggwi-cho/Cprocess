@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 #include "cprocess/topology.hpp"
 
@@ -43,30 +44,65 @@ QualityStats mesh_quality(const Mesh& m, double sliver_thresh) {
   return s;
 }
 
+SplitResult split_edges(Mesh& m, const std::vector<std::pair<int, int>>& edges) {
+  SplitResult res;
+  const int nc0 = static_cast<int>(m.cells.size());
+  res.cell_parent.resize(nc0);
+  std::iota(res.cell_parent.begin(), res.cell_parent.end(), 0);
+
+  MeshTopology topo;
+  topo.build(m);
+
+  std::vector<char> cell_touched(nc0, 0);
+
+  for (const auto& [a, b] : edges) {
+    const std::vector<int>& inc = topo.edge_incident(a, b);
+    if (inc.empty()) { ++res.n_skipped; continue; }
+
+    bool conflict = false;
+    for (int ci : inc) if (cell_touched[ci]) { conflict = true; break; }
+    if (conflict) { ++res.n_skipped; continue; }
+
+    const int mid = static_cast<int>(m.nodes.size());
+    m.nodes.push_back(0.5 * (m.nodes[a] + m.nodes[b]));
+
+    for (int ci : inc) {
+      std::array<int, 4> c1 = m.cells[ci];  // a-side: replace b with mid
+      std::array<int, 4> c2 = m.cells[ci];  // b-side: replace a with mid
+      for (auto& v : c1) if (v == b) v = mid;
+      for (auto& v : c2) if (v == a) v = mid;
+      m.cells[ci] = c1;
+      m.cells.push_back(c2);
+      m.cell_region.push_back(m.cell_region[ci]);
+      res.cell_parent.push_back(res.cell_parent[ci]);
+
+      cell_touched[ci] = 1;
+      // ci is still < nc0 sized cell_touched; new cell has no entry, but its
+      // parent ci is already marked touched, which is what matters for
+      // conflict checks against `inc` (all indices < nc0 here since incident
+      // cells come from the topology built before any split in this pass).
+    }
+    ++res.n_split;
+    res.last_new_node = mid;
+  }
+
+  m.finalize();
+  return res;
+}
+
 int edge_split(Mesh& m, int a, int b) {
-  std::vector<int> inc;
-  const int nc = static_cast<int>(m.cells.size());
-  for (int ci = 0; ci < nc; ++ci) {
-    const auto& c = m.cells[ci];
-    bool ha = false, hb = false;
-    for (int v : c) { ha |= (v == a); hb |= (v == b); }
-    if (ha && hb) inc.push_back(ci);
-  }
-  if (inc.empty()) return -1;
+  const std::size_t n0 = m.nodes.size();
+  SplitResult res = split_edges(m, {{a, b}});
+  if (m.nodes.size() == n0) return -1;
+  return res.last_new_node;
+}
 
-  const int mid = static_cast<int>(m.nodes.size());
-  m.nodes.push_back(0.5 * (m.nodes[a] + m.nodes[b]));
-
-  for (int ci : inc) {
-    std::array<int, 4> c1 = m.cells[ci];  // a-side: replace b with mid
-    std::array<int, 4> c2 = m.cells[ci];  // b-side: replace a with mid
-    for (auto& v : c1) if (v == b) v = mid;
-    for (auto& v : c2) if (v == a) v = mid;
-    m.cells[ci] = c1;
-    m.cells.push_back(c2);
-    m.cell_region.push_back(m.cell_region[ci]);
-  }
-  return mid;
+std::vector<double> redistribute_field(const std::vector<double>& conc,
+                                       const std::vector<int>& cell_parent) {
+  std::vector<double> out(cell_parent.size());
+  for (std::size_t i = 0; i < cell_parent.size(); ++i)
+    out[i] = conc[cell_parent[i]];
+  return out;
 }
 
 int laplacian_smooth(Mesh& m, int iters, double omega) {

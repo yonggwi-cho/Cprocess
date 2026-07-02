@@ -69,7 +69,6 @@ int main() {
 
     const int mid = edge_split(m, a, b);
     CHECK(mid >= 0);
-    m.finalize();
 
     CHECK(m.cells.size() == nc0 + ninc);
     CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
@@ -101,6 +100,90 @@ int main() {
     // Boundary nodes did not move.
     for (std::size_t k = 0; k < bnd_ids.size(); ++k)
       CHECK(norm(m.nodes[bnd_ids[k]] - bnd_before[k]) < 1e-15);
+  }
+
+  // ---- split_edges: finalize is included, single edge --------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    const int a = m.cells[0][0], b = m.cells[0][1];
+    SplitResult r = split_edges(m, {{a, b}});
+    CHECK(r.n_split == 1);
+    CHECK(r.n_skipped == 0);
+    CHECK(m.faces.size() > 0);
+    CHECK(m.cell_vol.size() == m.cells.size());
+    CHECK(mesh_quality(m).min_q > 0);
+  }
+
+  // ---- split_edges: volume preservation -----------------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    const double vol0 = m.total_volume();
+    const int a = m.cells[0][0], b = m.cells[0][1];
+    split_edges(m, {{a, b}});
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+  }
+
+  // ---- split_edges: batch split with conflict skip ------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    // Two edges of the same cell: they share incident cells.
+    const int v0 = m.cells[0][0], v1 = m.cells[0][1], v2 = m.cells[0][2];
+    SplitResult r = split_edges(m, {{v0, v1}, {v0, v2}});
+    CHECK(r.n_split == 1);
+    CHECK(r.n_skipped == 1);
+  }
+
+  // ---- redistribute_field: value and mass preservation --------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    const double vol0 = m.total_volume();
+    double mass0 = 0;
+    for (double v : m.cell_vol) mass0 += 1e15 * v;
+
+    const int v0 = m.cells[0][0], v1 = m.cells[0][1];
+    const int v2 = m.cells[3][0], v3 = m.cells[3][1];
+    std::vector<double> conc0(m.cells.size(), 1e15);
+    SplitResult r = split_edges(m, {{v0, v1}, {v2, v3}});
+    CHECK(r.n_split >= 1);
+
+    std::vector<double> conc1 = redistribute_field(conc0, r.cell_parent);
+    CHECK(conc1.size() == m.cells.size());
+    for (double c : conc1) CHECK(std::fabs(c - 1e15) < 1e-6);
+
+    double mass1 = 0;
+    for (std::size_t i = 0; i < conc1.size(); ++i) mass1 += conc1[i] * m.cell_vol[i];
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+    CHECK_NEAR(mass1, mass0, 1e-12 * mass0);
+  }
+
+  // ---- split_edges: many random edges, quality and volume preserved -------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    CHECK(mesh_quality(m).min_q > 0.1);
+    const double vol0 = m.total_volume();
+
+    MeshTopology topo;
+    topo.build(m);
+    std::vector<std::pair<int, int>> all_edges;
+    for (const auto& [key, cells] : topo.edge_cells) {
+      (void)cells;
+      const int a = static_cast<int>(key >> 32);
+      const int b = static_cast<int>(key & 0xffffffffu);
+      all_edges.push_back({a, b});
+    }
+
+    std::srand(42);
+    std::vector<std::pair<int, int>> chosen;
+    for (int i = 0; i < 50 && !all_edges.empty(); ++i) {
+      const std::size_t idx = static_cast<std::size_t>(std::rand()) % all_edges.size();
+      chosen.push_back(all_edges[idx]);
+    }
+
+    SplitResult r = split_edges(m, chosen);
+    std::printf("random split: n_split=%d n_skipped=%d\n", r.n_split, r.n_skipped);
+    CHECK(r.n_split > 0);
+    CHECK(mesh_quality(m).min_q > 0);
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
   }
 
   std::printf("remesh tests passed\n");
