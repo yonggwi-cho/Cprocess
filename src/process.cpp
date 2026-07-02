@@ -614,6 +614,7 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
   std::size_t k = 0;
   for (const auto& [sym, conc] : st.fields) {
     (void)conc;
+    if (!find_dopant(sym)) continue;  // only dopant fields have an _active entry
     scalars.emplace_back(sym + "_active", &extra[k++]);
   }
   scalars.emplace_back("NetDoping", &net);

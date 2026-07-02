@@ -15,6 +15,7 @@ import tempfile
 import numpy as np
 
 import cprocess as cp
+from cprocess import _cprocess as _c
 
 
 def check(cond, msg):
@@ -303,6 +304,160 @@ def test_ted_interstitial_field():
 
 
 # ---------------------------------------------------------------------------
+def test_error_paths():
+    """Error paths should raise, not silently misbehave."""
+    print("test_error_paths")
+
+    # mask without photo.
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim.region("silicon")
+    try:
+        sim.mask(x1=0.0, x2=0.1)
+        raised = False
+    except Exception:
+        raised = True
+    check(raised, "mask without photo raises")
+
+    # unknown species.
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim.region("silicon")
+    try:
+        sim.init("Zz", 1e15)
+        raised = False
+    except Exception:
+        raised = True
+    check(raised, "unknown species raises")
+
+    # deposit bad material.
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim.region("silicon")
+    try:
+        sim.deposit("unobtainium", thickness=0.1)
+        raised = False
+    except Exception:
+        raised = True
+    check(raised, "deposit bad material raises")
+
+    # bc unknown patch.
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    try:
+        sim.bc("B", "not_a_patch", 1e18)
+        raised = False
+    except Exception:
+        raised = True
+    check(raised, "bc unknown patch raises")
+
+
+def test_ted_flow_python():
+    """implant(damage=True) -> diffuse(ted=True) produces an 'I' field and
+    enhanced spread vs the equilibrium twin (regression guard, reuses
+    _spread())."""
+    print("test_ted_flow_python")
+
+    def run(ted):
+        sim = cp.Simulation()
+        sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+        sim.region("silicon")
+        sim.implant("B", dose=1e14, rp=0.05, drp=0.02, damage=ted)
+        sim.diffuse(time=1.0, temp=900, ted=ted)
+        return sim
+
+    sim_ted = run(True)
+    check("I" in sim_ted.field_names(), "'I' field present after TED flow")
+    s_eq = _spread(run(False), "B")
+    s_ted = _spread(sim_ted, "B")
+    print(f"  equilibrium spread={s_eq:.4f} um  ted spread={s_ted:.4f} um")
+    check(s_ted > s_eq, "TED spread exceeds equilibrium spread")
+
+
+def test_deck_equivalence():
+    """A deck string flow and the equivalent Simulation-method flow must
+    produce the same B field (regression guard for deck unit conversions)."""
+    print("test_deck_equivalence")
+
+    deck = """
+mesh box xmax=0.4um ymax=0.4um zmax=0.4um nx=4 ny=4 nz=4
+region all material=silicon
+init species=P conc=1e15
+implant species=B dose=1e13 rp=0.1um drp=0.03um
+diffuse time=5min temp=1000C
+"""
+    sim_deck = cp.Simulation()
+    _c.run_deck(deck, sim_deck.state)
+
+    sim_api = cp.Simulation()
+    sim_api.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+    sim_api.region("silicon")
+    sim_api.init("P", 1e15)
+    sim_api.implant("B", dose=1e13, rp=0.1, drp=0.03)
+    sim_api.diffuse(time=5, temp=1000)
+
+    B_deck = sim_deck.field("B")
+    B_api = sim_api.field("B")
+    check(B_deck.shape == B_api.shape, "deck vs api field shapes match")
+    check(np.allclose(B_deck, B_api, rtol=1e-12, atol=1e-6),
+          "deck vs api B field values match")
+
+
+def test_geometry_chain():
+    """photo -> mask_polygon(triangle) -> implant mc -> strip -> deposit ->
+    etch(poly): everything stays finite and consistent."""
+    print("test_geometry_chain")
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=0.6, nx=8, ny=8, nz=6)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+
+    sim.photo(resist=0.3)
+    triangle = [(0.1, 0.1), (0.8, 0.15), (0.4, 0.8)]
+    sim.mask_polygon(triangle)
+    sim.implant("P", dose=1e15, energy=30, mc=True, ions=20000, seed=5)
+    sim.strip()
+
+    n_before = sim.n_cells
+    sim.deposit("oxide", thickness=0.05)
+    rect = [(0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)]
+    sim.etch(depth=0.02, poly=rect)
+
+    for name in sim.field_names():
+        f = sim.field(name)
+        check(np.all(np.isfinite(f)), f"{name} finite after geometry chain")
+    check(sim.n_cells >= n_before, "mesh cell count consistent (grew or same)")
+    check(sim.dose("P") > 0, "P dose positive after geometry chain")
+
+
+def test_save_and_fields():
+    """save() writes a real file; field_names/cell_volumes are consistent."""
+    print("test_save_and_fields")
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.8, nx=4, ny=4, nz=8)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.init("P", 1e14)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "out.vtu")
+        sim.save(path)
+        check(os.path.exists(path), "save() creates a file")
+        check(os.path.getsize(path) > 1024, "saved file is larger than 1KB")
+
+    names = sim.field_names()
+    check("B" in names and "P" in names, "field_names contains all initialized species")
+
+    box_volume_cm3 = 0.4e-4 * 0.4e-4 * 0.8e-4
+    total_vol = float(np.sum(sim.cell_volumes))
+    print(f"  total cell volume={total_vol:.6e} cm^3, box={box_volume_cm3:.6e} cm^3")
+    check(abs(total_vol - box_volume_cm3) < 1e-12 * box_volume_cm3,
+          "cell_volumes sum matches box volume (cm^3)")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -319,4 +474,9 @@ if __name__ == "__main__":
     test_etch_polygon()
     test_ted_enhancement()
     test_ted_interstitial_field()
+    test_error_paths()
+    test_ted_flow_python()
+    test_deck_equivalence()
+    test_geometry_chain()
+    test_save_and_fields()
     print("\nall comprehensive Simulation tests passed")
