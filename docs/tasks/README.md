@@ -39,31 +39,31 @@
 | M-5 | `M5_quality_repair.md` | **実装済** | M-1 |
 | M-4 | `M4_interface_conform.md` | **実装済** | M-1, M-5 |
 
-### Sprint 1 — フロー完結性 (酸化系)
+### Sprint 1 — フロー完結性 (酸化系) (実装済み)
 
 | ID | ファイル | 状態 | 依存 |
 |----|---------|------|------|
-| P1-6 | `P1-6_oxidize.md` | 仕様確定 | M-4, M-5 |
-| P1-4 | `P1-4_segregation.md` | 仕様確定 | P1-6 |
-| P1-9 | `P1-9_multimaterial_diffusion.md` | 仕様確定 | P1-4 |
+| P1-6 | `P1-6_oxidize.md` | **実装済** | M-4, M-5 |
+| P1-4 | `P1-4_segregation.md` | **実装済** | P1-6 |
+| P1-9 | `P1-9_multimaterial_diffusion.md` | **実装済** | P1-4 |
 
-### Sprint 2 — アニール精度
-
-| ID | ファイル | 状態 | 依存 |
-|----|---------|------|------|
-| P1-3 | `P1-3_activation.md` | 仕様確定 | なし |
-| P1-5 | `P1-5_rta_ramp.md` | 仕様確定 | なし (P1-3 と同一ループを触る — 後着が 1 行調整) |
-| P1-2 | `P1-2_mc_damage_ted.md` | 仕様確定 | なし |
-
-### Sprint 3 — 注入精度 + 基盤
+### Sprint 2 — アニール精度 (実装済み)
 
 | ID | ファイル | 状態 | 依存 |
 |----|---------|------|------|
-| P1-1 | `P1-1_pearson4.md` | 仕様確定 | なし |
-| P1-10 | `P1-10_params.md` | 仕様確定 | なし |
-| M-2 (=P1-8) | `M2_adaptive_refine.md` | 仕様確定 | M-1 |
-| P1-7 | `P1-7_etch_depo_mesh.md` | 仕様確定 | P1-6 |
-| P1-11 | `P1-11_save_load_profile.md` | 仕様確定 | なし |
+| P1-3 | `P1-3_activation.md` | **実装済** | なし |
+| P1-5 | `P1-5_rta_ramp.md` | **実装済** | なし (P1-3 と同一ループを触る — 後着が 1 行調整) |
+| P1-2 | `P1-2_mc_damage_ted.md` | **実装済** | なし |
+
+### Sprint 3 — 注入精度 + 基盤 (実装済み)
+
+| ID | ファイル | 状態 | 依存 |
+|----|---------|------|------|
+| P1-1 | `P1-1_pearson4.md` | **実装済** | なし |
+| P1-10 | `P1-10_params.md` | **実装済** | なし |
+| M-2 (=P1-8) | `M2_adaptive_refine.md` | **実装済** | M-1 |
+| P1-7 | `P1-7_etch_depo_mesh.md` | **実装済** | P1-6 |
+| P1-11 | `P1-11_save_load_profile.md` | **実装済** | なし |
 
 ### Sprint 4+ — 物理深化 (P2)
 
