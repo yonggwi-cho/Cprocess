@@ -297,6 +297,19 @@ class Simulation:
         self._emit(_c.proc_save(self._st, path))
         return self
 
+    # -- parameter overrides (P1-10) --------------------------------------------
+    def set_param(self, key: str, value: float) -> "Simulation":
+        """Override a physical parameter (raw core units: cm^2/s, eV, cm^-3,
+        1/s, dimensionless -- no unit conversion). e.g.
+        set_param("B.d0", 0.074). See materials.hpp for the supported key set;
+        unknown keys are silently inert."""
+        self._emit(_c.proc_set_param(self._st, key, float(value)))
+        return self
+
+    def get_param(self, key: str, fallback: float = 0.0) -> float:
+        """Current override for `key`, or `fallback` if unset (raw core units)."""
+        return _c.proc_get_param(key, float(fallback))
+
     # -- accessors -------------------------------------------------------------
     @property
     def state(self):

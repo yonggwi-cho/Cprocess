@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cmath>
 
+#include "cprocess/param_db.hpp"
+
 namespace cp {
 
 namespace {
@@ -89,19 +91,31 @@ double ni_si(double temp_k) {
 }
 
 double dopant_diffusivity(const Dopant& d, double temp_k, double n_over_ni) {
+  const auto& P = ParamDB::instance();
   const double kt = kBoltzmannEv * temp_k;
   const double nni = std::max(n_over_ni, 1e-30);
+  const double d0 = P.get(d.symbol + ".d0", d.d0);
+  const double e0 = P.get(d.symbol + ".e0", d.e0);
+  const double dm = P.get(d.symbol + ".dm", d.dm);
+  const double em = P.get(d.symbol + ".em", d.em);
+  const double dmm = P.get(d.symbol + ".dmm", d.dmm);
+  const double emm = P.get(d.symbol + ".emm", d.emm);
+  const double dp = P.get(d.symbol + ".dp", d.dp);
+  const double ep = P.get(d.symbol + ".ep", d.ep);
   double dif = 0;
-  if (d.d0 > 0) dif += d.d0 * std::exp(-d.e0 / kt);
-  if (d.dm > 0) dif += d.dm * std::exp(-d.em / kt) * nni;
-  if (d.dmm > 0) dif += d.dmm * std::exp(-d.emm / kt) * nni * nni;
-  if (d.dp > 0) dif += d.dp * std::exp(-d.ep / kt) / nni;
+  if (d0 > 0) dif += d0 * std::exp(-e0 / kt);
+  if (dm > 0) dif += dm * std::exp(-em / kt) * nni;
+  if (dmm > 0) dif += dmm * std::exp(-emm / kt) * nni * nni;
+  if (dp > 0) dif += dp * std::exp(-ep / kt) / nni;
   return dif;
 }
 
 double solid_solubility(const Dopant& d, double temp_k) {
-  if (d.ss_pre <= 0) return 0;
-  return d.ss_pre * std::exp(-d.ss_e / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double ss_pre = P.get(d.symbol + ".ss_pre", d.ss_pre);
+  const double ss_e = P.get(d.symbol + ".ss_e", d.ss_e);
+  if (ss_pre <= 0) return 0;
+  return ss_pre * std::exp(-ss_e / (kBoltzmannEv * temp_k));
 }
 
 double active_concentration(const Dopant& d, double conc, double temp_k) {
@@ -112,14 +126,20 @@ double active_concentration(const Dopant& d, double conc, double temp_k) {
 // Self-interstitial equilibrium concentration. Arrhenius fit giving ~1e13 cm^-3
 // at 1000 C, rising toward ~1e15 near the melting point (cf. Bracht et al.).
 double interstitial_cstar(double temp_k) {
-  return 3.0e27 * std::exp(-3.7 / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double pre = P.get("I.cstar_pre", 3.0e27);
+  const double e = P.get("I.cstar_e", 3.7);
+  return pre * std::exp(-e / (kBoltzmannEv * temp_k));
 }
 
 // Effective self-interstitial diffusivity (product D_I dominated by fast
 // migration). ~1e-8 cm^2/s at 1000 C — the excess spreads and reaches the
 // surface sink over seconds to minutes, setting the TED duration.
 double interstitial_diffusivity(double temp_k) {
-  return 5.0e-2 * std::exp(-1.77 / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double pre = P.get("I.d0", 5.0e-2);
+  const double e = P.get("I.e0", 1.77);
+  return pre * std::exp(-e / (kBoltzmannEv * temp_k));
 }
 
 // Bulk I-V recombination / trapping rate. The interstitial supersaturation
@@ -127,35 +147,54 @@ double interstitial_diffusivity(double temp_k) {
 // surface sink this bounds the enhanced-diffusion transient. Calibrated so the
 // transient lasts tens of seconds at typical anneal temperatures (tau ~ 1/k).
 double interstitial_recomb_rate(double temp_k) {
-  return 2.0e4 * std::exp(-1.4 / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double pre = P.get("I.krec_pre", 2.0e4);
+  const double e = P.get("I.krec_e", 1.4);
+  return pre * std::exp(-e / (kBoltzmannEv * temp_k));
 }
 
 double segregation_m(const Dopant& d, double temp_k) {
-  return d.seg_m0 * std::exp(-d.seg_e / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double m0 = P.get(d.symbol + ".seg_m0", d.seg_m0);
+  const double e = P.get(d.symbol + ".seg_e", d.seg_e);
+  return m0 * std::exp(-e / (kBoltzmannEv * temp_k));
 }
 
 double segregation_h(const Dopant& d, double temp_k) {
-  return d.seg_h0 * std::exp(-d.seg_he / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double h0 = P.get(d.symbol + ".seg_h0", d.seg_h0);
+  const double he = P.get(d.symbol + ".seg_he", d.seg_he);
+  return h0 * std::exp(-he / (kBoltzmannEv * temp_k));
 }
 
 double oxide_diffusivity(const Dopant& d, double temp_k) {
-  if (d.dox0 <= 0) return 0.0;
-  return d.dox0 * std::exp(-d.eox / (kBoltzmannEv * temp_k));
+  const auto& P = ParamDB::instance();
+  const double dox0 = P.get(d.symbol + ".dox0", d.dox0);
+  const double eox = P.get(d.symbol + ".eox", d.eox);
+  if (dox0 <= 0) return 0.0;
+  return dox0 * std::exp(-eox / (kBoltzmannEv * temp_k));
 }
 
 double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
                             double nni) {
+  const auto& P = ParamDB::instance();
   switch (mat) {
     case kMatSi:
       return dopant_diffusivity(d, temp_k, nni);
     case kMatOxide:
       return oxide_diffusivity(d, temp_k);
-    case kMatNitride:
-      if (d.dnit0 <= 0) return 0.0;
-      return d.dnit0 * std::exp(-d.enit / (kBoltzmannEv * temp_k));
-    case kMatPoly:
-      if (d.dpoly0 <= 0) return 0.0;
-      return d.dpoly0 * std::exp(-d.epoly / (kBoltzmannEv * temp_k));
+    case kMatNitride: {
+      const double dnit0 = P.get(d.symbol + ".dnit0", d.dnit0);
+      const double enit = P.get(d.symbol + ".enit", d.enit);
+      if (dnit0 <= 0) return 0.0;
+      return dnit0 * std::exp(-enit / (kBoltzmannEv * temp_k));
+    }
+    case kMatPoly: {
+      const double dpoly0 = P.get(d.symbol + ".dpoly0", d.dpoly0);
+      const double epoly = P.get(d.symbol + ".epoly", d.epoly);
+      if (dpoly0 <= 0) return 0.0;
+      return dpoly0 * std::exp(-epoly / (kBoltzmannEv * temp_k));
+    }
     case kMatGas:
     default:
       return 0.0;

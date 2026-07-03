@@ -577,6 +577,26 @@ PYBIND11_MODULE(_cprocess, m) {
       "Per-cell electrically active concentration [cm^-3] (solid-solubility "
       "clamp); temp_k<=0 uses the last diffuse temperature.");
 
+  m.def("proc_set_param",
+      [](SimState& st, const std::string& key, double value) {
+        std::ostringstream log;
+        proc::set_param(st, key, value, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("key"), py::arg("value"),
+      "Override a physical parameter (raw core units); see materials.hpp "
+      "for the supported key set.");
+
+  m.def("proc_get_param",
+      [](const std::string& key, double fallback) {
+        return proc::get_param(key, fallback);
+      },
+      py::arg("key"), py::arg("fallback") = 0.0);
+
+  m.def("proc_list_params",
+      []() { return proc::list_params(); },
+      "Currently-set parameter overrides (not the full supported key set).");
+
   m.def("find_patch",
       [](const SimState& st, const std::string& name) {
         return st.mesh.find_patch(name);

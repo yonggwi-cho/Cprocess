@@ -1,5 +1,6 @@
 #pragma once
 #include <iosfwd>
+#include <map>
 #include <string>
 
 #include "deck.hpp"
@@ -118,6 +119,18 @@ void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 // the field does not exist.
 std::vector<double> active_field(const SimState& st, const std::string& species,
                                  double temp_k = -1.0, std::ostream* log = nullptr);
+
+// ── Runtime parameter overrides (P1-10, cp::ParamDB) ──
+// Override any physical parameter consumed by cp::materials.cpp / the TED
+// loop / seed_interstitials at call time (raw core units). No key validation
+// -- an unknown key is silently harmless. `st` is unused (kept for API
+// consistency with the other proc:: functions).
+void set_param(SimState& st, const std::string& key, double value,
+               std::ostream* log = nullptr);
+// Returns the override for `key` if set, else `fallback`.
+double get_param(const std::string& key, double fallback = 0.0);
+// Currently-set overrides (not the full supported key set).
+std::map<std::string, double> list_params();
 
 }  // namespace proc
 }  // namespace cp

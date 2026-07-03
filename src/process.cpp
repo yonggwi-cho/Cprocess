@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <ostream>
 #include <stdexcept>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "cprocess/field_transfer.hpp"
 #include "cprocess/gmsh_reader.hpp"
 #include "cprocess/oxidation.hpp"
+#include "cprocess/param_db.hpp"
 #include "cprocess/remesh.hpp"
 #include "cprocess/vtk_writer.hpp"
 
@@ -114,9 +116,10 @@ void seed_interstitials(SimState& st, const std::vector<double>& before,
                         const std::vector<double>& after) {
   auto& I = st.fields["I"];
   I.resize(st.mesh.cells.size(), 0.0);
+  const double survival = ParamDB::instance().get("ted.frenkel_survival", 1.0);
   for (std::size_t i = 0; i < after.size(); ++i) {
     const double added = after[i] - (i < before.size() ? before[i] : 0.0);
-    if (added > 0) I[i] += added;
+    if (added > 0) I[i] += survival * added;
   }
 }
 
@@ -892,6 +895,21 @@ std::vector<double> active_field(const SimState& st, const std::string& species,
     *log << "[active] " << d->symbol << ": C_ss(T)=" << solid_solubility(*d, t_k)
          << " cm^-3\n";
   return act;
+}
+
+void set_param(SimState& st, const std::string& key, double value,
+              std::ostream* log) {
+  (void)st;
+  ParamDB::instance().set(key, value);
+  if (log) *log << "[param] " << key << " = " << fmt("%.6g", value) << "\n";
+}
+
+double get_param(const std::string& key, double fallback) {
+  return ParamDB::instance().get(key, fallback);
+}
+
+std::map<std::string, double> list_params() {
+  return ParamDB::instance().all();
 }
 
 }  // namespace proc

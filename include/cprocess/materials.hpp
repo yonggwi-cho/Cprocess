@@ -5,6 +5,31 @@
 
 namespace cp {
 
+// ── Runtime parameter overrides (P1-10, cp::ParamDB) ──
+// The functions below read every physical constant through
+// ParamDB::instance().get(key, fallback) at call time, so cp::ParamDB::set()
+// can override any of the following keys (raw core units: cm^2/s, eV,
+// cm^-3, 1/s, dimensionless). <Sym> is Dopant::symbol ("B", "P", "As", "Sb").
+// Unknown keys are silently inert.
+//
+//   <Sym>.d0     / <Sym>.e0     -- dopant_diffusivity neutral term
+//   <Sym>.dm     / <Sym>.em     -- dopant_diffusivity single-negative term
+//   <Sym>.dmm    / <Sym>.emm    -- dopant_diffusivity double-negative term
+//   <Sym>.dp     / <Sym>.ep     -- dopant_diffusivity single-positive term
+//   <Sym>.ss_pre / <Sym>.ss_e   -- solid_solubility
+//   <Sym>.fi                    -- TED mixing fraction (run_ted)
+//   <Sym>.seg_m0 / <Sym>.seg_e  -- segregation_m
+//   <Sym>.seg_h0 / <Sym>.seg_he -- segregation_h
+//   <Sym>.dox0   / <Sym>.eox    -- oxide_diffusivity
+//   <Sym>.dnit0  / <Sym>.enit   -- material_diffusivity (kMatNitride)
+//   <Sym>.dpoly0 / <Sym>.epoly  -- material_diffusivity (kMatPoly)
+//   I.cstar_pre  / I.cstar_e    -- interstitial_cstar
+//   I.d0         / I.e0         -- interstitial_diffusivity
+//   I.krec_pre   / I.krec_e     -- interstitial_recomb_rate
+//   ted.smax                    -- run_ted supersaturation cap S_max
+//   ted.frenkel_survival        -- multiplier on the "+1" seed_interstitials
+//                                   added amount (fallback 1.0)
+
 constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
 // Fraction of Kinchin-Pease Frenkel pairs surviving in-cascade

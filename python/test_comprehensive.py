@@ -712,6 +712,43 @@ def test_pearson_python():
     check(threw, "mc=True with profile='pearson' raises ValueError")
 
 
+def test_params_python():
+    """P1-10: runtime parameter overrides (set_param/get_param)."""
+    print("test_params_python")
+
+    sim = cp.Simulation()
+    sim.set_param("B.d0", 0.05)
+    check(sim.get_param("B.d0") == 0.05, "set_param/get_param roundtrip")
+    check(sim.get_param("nonexistent.key", 7.5) == 7.5,
+          "get_param falls back for an unset key")
+
+    # Restore B's compiled-in default (0.037 cm^2/s) so the override set above
+    # doesn't leak into later tests.
+    sim.set_param("B.d0", 0.037)
+    check(sim.get_param("B.d0") == 0.037, "B.d0 restored to default after test")
+
+    def spread(ted, fi=None):
+        s = cp.Simulation()
+        s.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+        s.region("silicon")
+        s.implant("B", dose=1e14, rp=0.05, drp=0.02, damage=True)
+        if fi is not None:
+            s.set_param("B.fi", fi)
+        s.diffuse(time=1.0, temp=950, ted=ted)
+        return _spread(s, "B")
+
+    s_eq = spread(ted=False)
+    s_ted_fi0 = spread(ted=True, fi=0.0)
+    ratio = s_ted_fi0 / s_eq
+    print(f"  equilibrium spread={s_eq:.4f} um  ted(fi=0) spread={s_ted_fi0:.4f} um"
+          f"  ratio={ratio:.3f}")
+    check(ratio < 1.1, "B.fi=0.0 suppresses TED enhancement (ratio < 1.1)")
+
+    # Restore the compiled-in default so later tests aren't affected.
+    sim.set_param("B.fi", 1.0)
+    check(sim.get_param("B.fi") == 1.0, "B.fi restored to default after test")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -742,4 +779,5 @@ if __name__ == "__main__":
     test_activation_python()
     test_rta_ramp_python()
     test_pearson_python()
+    test_params_python()
     print("\nall comprehensive Simulation tests passed")

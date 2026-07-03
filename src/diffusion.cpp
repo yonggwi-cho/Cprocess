@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "cprocess/param_db.hpp"
+
 namespace cp {
 
 namespace {
@@ -641,6 +643,14 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
   for (int i = 0; i < nc; ++i)
     s_peak0 = std::max(s_peak0, 1.0 + psi[i] / cstar0);
 
+  // Per-parameter ParamDB reads, once (not inside the time loop): TED
+  // supersaturation cap and per-species fi (interstitial mixing fraction).
+  const double smax_cap = ParamDB::instance().get("ted.smax", 3.0e3);
+  std::vector<double> fi_ov(ns);
+  for (int s = 0; s < ns; ++s)
+    fi_ov[s] = ParamDB::instance().get(fields[s].dopant->symbol + ".fi",
+                                       fields[s].dopant->fi);
+
   double cstar = cstar0;  // kept for the post-loop summary log
   int step = 0;
   const int every = std::max(1, nsteps_est / 10);
@@ -669,11 +679,10 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
     // The "+1" model over-counts free interstitials: most cluster into {311}
     // defects that buffer the free concentration. Lacking an explicit cluster
     // model, cap S at kSmax to keep the free supersaturation physical (~1e3).
-    constexpr double kSmax = 3.0e3;
     double smax = 0;
     std::vector<double> S(nc, 1.0);
     for (int i = 0; i < nc; ++i) {
-      S[i] = 1.0 + ((mat_[i] == kMatSi) ? std::min(psi[i] / cstar, kSmax) : 0.0);
+      S[i] = 1.0 + ((mat_[i] == kMatSi) ? std::min(psi[i] / cstar, smax_cap) : 0.0);
       smax = std::max(smax, S[i]);
     }
 
@@ -717,7 +726,7 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
             }
             // Pair-diffusion (TED) enhancement is a Si point-defect effect:
             // (1 - fi) + fi * S, Si cells only.
-            dv *= (1.0 - dp.fi) + dp.fi * S[i];
+            dv *= (1.0 - fi_ov[s]) + fi_ov[s] * S[i];
             dcell[s][i] = dv;
           }
         }
