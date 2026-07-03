@@ -173,6 +173,7 @@ void mesh_box(SimState& st, double x0, double x1, double y0, double y1,
   st.fields.clear();
   st.bcs.clear();
   st.region_material.clear();
+  st.layer_stack.clear();
   strip(st, nullptr);
   for (int tag : st.mesh.region_tags()) st.region_material[tag] = "silicon";
   if (log) {
@@ -192,6 +193,7 @@ void mesh_gmsh(SimState& st, const std::string& file, double scale,
   st.fields.clear();
   st.bcs.clear();
   st.region_material.clear();
+  st.layer_stack.clear();
   strip(st, nullptr);
   for (int tag : st.mesh.region_tags()) st.region_material[tag] = "silicon";
 }
@@ -511,7 +513,13 @@ void deposit(SimState& st, const std::string& material,
   // Tag newly added cells as `material` when they are (a) above the old surface
   // and (b) inside the polygon (or unconditionally if poly is empty).
   const bool use_poly = poly.size() >= 3;
-  for (int tag : ext.region_tags()) st.region_material[tag] = "silicon";
+  // Bug fix (P1-7): only default *unknown* tags to "silicon" — a blanket
+  // "silicon" write here used to clobber the region_material of prior
+  // deposited films (e.g. a first deposit("oxide", ...) layer) whose tag
+  // survives into `ext.region_tags()` unchanged.
+  for (int tag : ext.region_tags())
+    if (st.region_material.find(tag) == st.region_material.end())
+      st.region_material[tag] = "silicon";
 
   // We store the deposit material in the region_material map keyed by a new
   // synthetic region tag that doesn't conflict with existing ones.
@@ -524,12 +532,27 @@ void deposit(SimState& st, const std::string& material,
   ext.cell_region.resize(nc_ext, 0);
   // Keep existing cell_region for the base cells; set deposited cells.
   // ext is a fresh mesh, so re-populate cell_region from centroids.
+  const int nc_old_r = static_cast<int>(st.mesh.cells.size());
   for (int ci = 0; ci < nc_ext; ++ci) {
     const Vec3& c = ext.cell_cent[ci];
     if (c.z > z_top) {
       // New deposited cell: apply polygon filter.
       if (!use_poly || point_in_polygon(c.x, c.y, poly))
         ext.cell_region[ci] = dep_tag;
+    } else {
+      // Bug fix (P1-7): base cells (z <= z_top) must inherit the region tag
+      // of their nearest-centroid old cell, not the default-initialized 0 —
+      // otherwise a prior film's material tag is lost after the next
+      // deposit's mesh rebuild.
+      double best = 1e300;
+      int best_j = 0;
+      for (int j = 0; j < nc_old_r; ++j) {
+        const Vec3& oc = st.mesh.cell_cent[j];
+        const double dx = c.x - oc.x, dy = c.y - oc.y, dz = c.z - oc.z;
+        const double d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; best_j = j; }
+      }
+      ext.cell_region[ci] = st.mesh.cell_region[best_j];
     }
   }
   st.region_material[dep_tag] = mat;
@@ -558,6 +581,7 @@ void deposit(SimState& st, const std::string& material,
   }
 
   st.mesh = std::move(ext);
+  st.layer_stack.insert(st.layer_stack.begin(), {dep_tag, mat});
 
   if (log)
     *log << "[deposit] " << material << " thickness="
@@ -566,19 +590,125 @@ void deposit(SimState& st, const std::string& material,
          << ", mesh now " << st.mesh.cells.size() << " tets\n";
 }
 
+namespace {
+// True if `cell_mat` should be treated as etched under selectivity filter
+// `filter` (already lower-cased is not required from caller). Empty filter
+// matches every non-gas material. Non-empty filter matches case-insensitive,
+// with the silicon "si"/"silicon" alias (same normalization as is_silicon).
+bool material_matches(const std::string& cell_mat, const std::string& filter) {
+  const std::string cm = lower(cell_mat);
+  if (filter.empty()) return cm != "gas";
+  const std::string fm = lower(filter);
+  if (is_silicon(fm)) return is_silicon(cm);
+  return cm == fm;
+}
+}  // namespace
+
 void etch(SimState& st, double depth,
           const std::vector<std::pair<double,double>>& poly,
+          const std::string& material,
           std::ostream* log) {
   need_mesh(st);
   if (depth <= 0) throw std::runtime_error("etch: depth must be > 0");
+  if (st.has_stack) throw std::runtime_error("etch: strip resist first");
 
   const BBox bb = st.mesh.bbox();
   const double z_top = bb.hi.z;
   const double z_cut = z_top - depth;
   const bool use_poly = poly.size() >= 3;
 
-  // Cells with centroid above z_cut and inside the polygon are retagged as gas.
-  // Find or create a "gas" region tag.
+  auto material_of = [&](int tag) -> std::string {
+    auto it = st.region_material.find(tag);
+    return it == st.region_material.end() ? "silicon" : it->second;
+  };
+
+  const int nc = static_cast<int>(st.mesh.cells.size());
+  if (st.mesh.cell_region.size() != static_cast<std::size_t>(nc))
+    st.mesh.cell_region.resize(nc, 0);
+
+  if (!use_poly) {
+    // ── Blanket etch: TRUE cell removal (node compaction + identity field
+    // transfer). See process.hpp for why polygon etch keeps the old
+    // gas-retag behavior instead.
+    std::vector<char> keep(nc, 1);
+    int removed = 0;
+    for (int ci = 0; ci < nc; ++ci) {
+      const Vec3& c = st.mesh.cell_cent[ci];
+      if (c.z > z_cut &&
+          material_matches(material_of(st.mesh.cell_region[ci]), material)) {
+        keep[ci] = 0;
+        ++removed;
+      }
+    }
+
+    // Map old cell index -> new cell index (kept cells only).
+    std::vector<int> new_cell_of(nc, -1);
+    std::vector<int> kept_old;
+    kept_old.reserve(nc - removed);
+    for (int ci = 0; ci < nc; ++ci) {
+      if (!keep[ci]) continue;
+      new_cell_of[ci] = static_cast<int>(kept_old.size());
+      kept_old.push_back(ci);
+    }
+
+    // Node compaction: collect nodes referenced by kept cells only.
+    const int nn_old = static_cast<int>(st.mesh.nodes.size());
+    std::vector<int> new_node_of(nn_old, -1);
+    Mesh nm;
+    nm.nodes.reserve(nn_old);
+    for (int oci : kept_old) {
+      for (int k = 0; k < 4; ++k) {
+        const int nid = st.mesh.cells[oci][k];
+        if (new_node_of[nid] < 0) {
+          new_node_of[nid] = static_cast<int>(nm.nodes.size());
+          nm.nodes.push_back(st.mesh.nodes[nid]);
+        }
+      }
+    }
+    nm.cells.resize(kept_old.size());
+    nm.cell_region.resize(kept_old.size());
+    for (std::size_t k = 0; k < kept_old.size(); ++k) {
+      const int oci = kept_old[k];
+      for (int v = 0; v < 4; ++v)
+        nm.cells[k][v] = new_node_of[st.mesh.cells[oci][v]];
+      nm.cell_region[k] = st.mesh.cell_region[oci];
+    }
+    nm.patch_names = st.mesh.patch_names;
+    nm.region_names = st.mesh.region_names;
+    nm.finalize();
+
+    // Identity field transfer: kept cells copy their old value exactly, no
+    // interpolation — mass in surviving cells is preserved bit-for-bit.
+    for (auto& [sym, conc] : st.fields) {
+      std::vector<double> new_conc(kept_old.size());
+      for (std::size_t k = 0; k < kept_old.size(); ++k)
+        new_conc[k] = conc[kept_old[k]];
+      conc = std::move(new_conc);
+    }
+
+    st.mesh = std::move(nm);
+
+    // Drop layer_stack entries for any region tag that has no surviving
+    // cells (region_material entries themselves are left intact).
+    auto tag_has_cells = [&](int tag) {
+      for (int r : st.mesh.cell_region)
+        if (r == tag) return true;
+      return false;
+    };
+    for (auto it = st.layer_stack.begin(); it != st.layer_stack.end();) {
+      if (!tag_has_cells(it->first)) it = st.layer_stack.erase(it);
+      else ++it;
+    }
+
+    if (log)
+      *log << "[etch] depth=" << fmt("%.4g", depth * 1e4) << " um (blanket"
+           << (material.empty() ? "" : ", material=" + material)
+           << "), removed " << removed << " cells, mesh now "
+           << st.mesh.cells.size() << " tets\n";
+    return;
+  }
+
+  // ── Polygon etch: gas re-tag (mesh topology unchanged).
   int gas_tag = -1;
   for (const auto& [t, m] : st.region_material)
     if (m == "gas") { gas_tag = t; break; }
@@ -591,14 +721,11 @@ void etch(SimState& st, double depth,
   }
 
   int etched = 0;
-  const int nc = static_cast<int>(st.mesh.cells.size());
-  if (st.mesh.cell_region.size() != static_cast<std::size_t>(nc))
-    st.mesh.cell_region.resize(nc, 0);
-
   for (int ci = 0; ci < nc; ++ci) {
     const Vec3& c = st.mesh.cell_cent[ci];
     if (c.z < z_cut) continue;  // below etch depth
-    if (use_poly && !point_in_polygon(c.x, c.y, poly)) continue;
+    if (!point_in_polygon(c.x, c.y, poly)) continue;
+    if (!material_matches(material_of(st.mesh.cell_region[ci]), material)) continue;
     st.mesh.cell_region[ci] = gas_tag;
     ++etched;
   }
@@ -609,9 +736,9 @@ void etch(SimState& st, double depth,
       if (st.mesh.cell_region[ci] == gas_tag) conc[ci] = 0.0;
 
   if (log)
-    *log << "[etch] depth=" << fmt("%.4g", depth * 1e4) << " um"
-         << (use_poly ? " (polygon masked)" : " (blanket)")
-         << ", etched " << etched << " cells\n";
+    *log << "[etch] depth=" << fmt("%.4g", depth * 1e4) << " um (polygon masked"
+         << (material.empty() ? "" : ", material=" + material)
+         << "), etched " << etched << " cells\n";
 }
 
 namespace {

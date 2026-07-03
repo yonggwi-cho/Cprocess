@@ -22,6 +22,12 @@ struct SimState {
   std::vector<DirichletBC> bcs;
   double last_temp = 1273.15;  // K, used for solubility clamping on save
 
+  // Top-down stack of (region_tag, material) layers, most-recently-deposited
+  // first. Maintained by deposit() (push front) and blanket etch() (pop
+  // consumed layers); cleared by mesh_box/mesh_gmsh. (Future P1-6 oxidize
+  // will maintain it too.)
+  std::vector<std::pair<int, std::string>> layer_stack;
+
   // ── Physical process stack ────────────────────────────────────────────────
   // Built by 'photo', consumed by 'implant method=mc', destroyed by 'strip'.
   // The stack mesh covers the same (x,y) footprint as `mesh` but extends

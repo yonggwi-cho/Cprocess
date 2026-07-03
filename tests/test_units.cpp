@@ -346,7 +346,7 @@ static void test_proc_errors() {
   {
     SimState st = fresh_box_state();
     expect_throw("etch depth<=0",
-                 [&] { proc::etch(st, 0.0, {}, nullptr); });
+                 [&] { proc::etch(st, 0.0, {}, "", nullptr); });
   }
   {
     SimState st = fresh_box_state();

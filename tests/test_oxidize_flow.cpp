@@ -152,7 +152,12 @@ static void test_gas_surface_throws() {
   std::printf("test_gas_surface_throws\n");
   std::ostringstream log;
   SimState st = make_state(log);
-  proc::etch(st, 0.05e-4, {}, &log);
+  // Blanket etch (P1-7) now physically removes cells, so the top surface
+  // would simply be bare Si again; use a polygon etch (still gas-retag) to
+  // leave a non-Si/SiO2 top surface for oxidize's guard to reject.
+  const std::vector<std::pair<double, double>> full_poly = {
+      {0, 0}, {0.2e-4, 0}, {0.2e-4, 0.2e-4}, {0, 0.2e-4}};
+  proc::etch(st, 0.05e-4, full_poly, "", &log);
 
   bool threw = false;
   try {

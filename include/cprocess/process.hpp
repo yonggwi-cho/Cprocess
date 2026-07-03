@@ -83,12 +83,22 @@ void deposit(SimState& st, const std::string& material,
              const std::vector<std::pair<double,double>>& poly = {},
              std::ostream* log = nullptr);
 
-// Etch the silicon (or whichever surface material) down by `depth` (cm) in
-// the region defined by `poly`; empty vector means blanket etch.
-// Cells within `depth` of the top surface and inside `poly` are tagged as
-// the material "etch" (gas/vacuum) so subsequent implants/diffusions skip them.
+// Etch the top surface down by `depth` (cm).
+// poly empty (or < 3 vertices): BLANKET etch — cells with centroid above
+// (bbox.hi.z - depth) and matching `material` are physically REMOVED from
+// the mesh (node compaction + identity field transfer), shrinking the mesh
+// and bbox. poly given: POLYGON etch — matching cells inside the polygon
+// keep their old behavior of being retagged to "gas" with zeroed fields (the
+// mesh stays box-shaped; true removal of an interior column would produce a
+// non-manifold surface that break extend_mesh_exact()/infer_box_dims() on
+// the next deposit — that generalization is P2-5's scope).
+// material: empty means all non-gas materials; otherwise only cells whose
+// region_material matches (case-insensitive, "si"/"silicon" aliased) are
+// affected — other cells in the depth band are left untouched (selectivity).
+// Throws if a photoresist stack is present (strip first).
 void etch(SimState& st, double depth,
           const std::vector<std::pair<double,double>>& poly = {},
+          const std::string& material = "",
           std::ostream* log = nullptr);
 
 // Dirichlet boundary conditions for diffusion.

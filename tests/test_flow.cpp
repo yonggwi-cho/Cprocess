@@ -98,7 +98,7 @@ static void test_full_front_end_flow() {
   std::vector<std::pair<double, double>> left_rect = {
       {bb.lo.x, bb.lo.y}, {(bb.lo.x + bb.hi.x) / 2, bb.lo.y},
       {(bb.lo.x + bb.hi.x) / 2, bb.hi.y}, {bb.lo.x, bb.hi.y}};
-  proc::etch(st, 0.02e-4, left_rect, &log);
+  proc::etch(st, 0.02e-4, left_rect, "", &log);
 
   const int zmax_patch = st.mesh.find_patch("zmax");
   CHECK(zmax_patch >= 0);
@@ -272,7 +272,7 @@ static void test_conservation_chain() {
     if (st.mesh.cell_cent[i].z >= z_cut) removed += q;
     else kept_expected += q;
   }
-  proc::etch(st, 0.1e-4, {}, &log);
+  proc::etch(st, 0.1e-4, {}, "", &log);
   const double mass2 = total_mass(st, "B");
   std::printf("  kept_expected=%.6e mass2=%.6e\n", kept_expected, mass2);
   CHECK_NEAR(mass2, kept_expected, 1e-9 * (kept_expected + 1.0));

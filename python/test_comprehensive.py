@@ -213,7 +213,8 @@ def test_deposit_blanket():
 
 
 def test_etch_blanket():
-    """etch() removes top cells and zeroes their concentrations."""
+    """Blanket etch() (P1-7) physically removes top cells: n_cells and the
+    bbox top shrink; no cells above (old_top - depth) survive."""
     print("test_etch_blanket")
     sim = cp.Simulation()
     sim.mesh(x=0.4, y=0.4, z=0.5, nx=4, ny=4, nz=8)
@@ -222,13 +223,17 @@ def test_etch_blanket():
     sim.implant("P", dose=1e14, rp=0.05, drp=0.02)
     xyz_before = sim.cell_centroids
     z_top_before = float(xyz_before[:, 2].max())
+    n_before = sim.n_cells
+    cell_h = 0.5 / 8.0
     sim.etch(depth=0.1)  # etch 0.1 µm off the top
-    P = sim.field("P")
+    n_after = sim.n_cells
+    check(n_after < n_before, "etch: blanket etch removed cells")
     xyz = sim.cell_centroids
-    # Cells clearly within the etch region (centroid > z_top - 0.08 µm) should be zeroed.
-    etched_cells = xyz[:, 2] > (z_top_before - 0.08)
-    q_etched = float(np.sum(P[etched_cells])) if etched_cells.any() else -1.0
-    check(q_etched == 0.0, "etch: top-surface concentrations zeroed after etch")
+    z_top_after = float(xyz[:, 2].max())
+    check(z_top_after <= (z_top_before - 0.1) + cell_h + 1e-9,
+          "etch: top surface dropped by ~depth")
+    check(bool(np.all(xyz[:, 2] <= z_top_before - 0.1 + cell_h + 1e-9)),
+          "etch: no surviving cells above old_top - depth")
 
 
 def test_etch_polygon():
@@ -767,6 +772,37 @@ def test_refine_python():
     check(len(sim.field("B")) == n1, "field resized to new mesh")
 
 
+def test_etch_depo_p17():
+    """P1-7: multi-layer deposit + blanket true-removal etch + material
+    selectivity + polygon etch (legacy retag) + dose conservation."""
+    print("test_etch_depo_p17")
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=0.5, nx=4, ny=4, nz=8)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.deposit("oxide", thickness=0.1).deposit("nitride", thickness=0.1)
+
+    n0 = sim.n_cells
+    bb0 = sim.bbox()
+    dose0 = sim.dose("B")
+    sim.etch(0.1)  # blanket: strips the nitride layer, true removal
+    n1 = sim.n_cells
+    bb1 = sim.bbox()
+    check(n1 < n0, "etch: blanket etch reduced n_cells")
+    check(bb1[1][2] < bb0[1][2], "etch: blanket etch shrank the bbox top")
+    dose1 = sim.dose("B")
+    check(abs(dose1 - dose0) / dose0 < 1e-9, "etch: blanket etch conserves B dose")
+
+    sim.etch(0.2, material="oxide")  # selective: strip remaining oxide
+    n2 = sim.n_cells
+    check(n2 < n1, "etch: selective material etch reduced n_cells")
+
+    n3 = sim.n_cells
+    sim.etch(0.05, poly=[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)])
+    n4 = sim.n_cells
+    check(n4 == n3, "etch: polygon etch leaves n_cells unchanged (retag)")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -799,4 +835,5 @@ if __name__ == "__main__":
     test_pearson_python()
     test_params_python()
     test_refine_python()
+    test_etch_depo_p17()
     print("\nall comprehensive Simulation tests passed")

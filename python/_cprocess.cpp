@@ -502,15 +502,19 @@ PYBIND11_MODULE(_cprocess, m) {
 
   m.def("proc_etch",
       [](SimState& st, double depth,
-         const std::vector<std::pair<double,double>>& poly) {
+         const std::vector<std::pair<double,double>>& poly,
+         const std::string& material) {
         std::ostringstream log;
-        proc::etch(st, depth, poly, &log);
+        proc::etch(st, depth, poly, material, &log);
         return log.str();
       },
       py::arg("state"), py::arg("depth"),
       py::arg("poly") = std::vector<std::pair<double,double>>{},
+      py::arg("material") = std::string(""),
       "Etch the top surface down by depth (cm).\n"
-      "poly restricts the etch region (empty = blanket).\n"
+      "poly restricts the etch region (empty = blanket, physically removes\n"
+      "cells; non-empty retags cells as gas). material restricts the etch\n"
+      "to a single material (empty = all non-gas materials).\n"
       "Returns a log string.");
 
   m.def("proc_oxidize",

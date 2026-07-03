@@ -196,7 +196,11 @@ class Simulation:
 
     def deposit(self, material: str, thickness: float,
                 nz: int = 2, poly=None) -> "Simulation":
-        """Deposit a film on the top surface.
+        """Deposit a film on the top surface. Multi-layer deposits are
+
+        supported (e.g. deposit('oxide', ...).deposit('nitride', ...)): each
+        call pushes a new entry onto the internal layer stack, most recent
+        first, so earlier films keep their own material identity.
 
         material: 'oxide', 'nitride', 'poly', 'silicon', ...
         thickness: film thickness in micrometres.
@@ -208,16 +212,25 @@ class Simulation:
                                    int(nz), poly_cm))
         return self
 
-    def etch(self, depth: float, poly=None) -> "Simulation":
+    def etch(self, depth: float, poly=None, material: str = "") -> "Simulation":
         """Etch the top surface down by `depth` micrometres.
 
         poly: optional sequence of (x, y) tuples in micrometres that restricts
               the etch to a polygon footprint; omit for blanket etch.
+        material: optional material name (e.g. 'oxide') to etch selectively;
+              empty (default) etches all non-gas materials.
 
-        Etched cells are retagged as 'gas' and their concentrations are zeroed.
+        A blanket etch (poly omitted) physically REMOVES the etched cells
+        from the mesh (node compaction + identity field transfer for the
+        surviving cells) -- `n_cells` and the bbox shrink accordingly. A
+        polygon etch keeps the legacy behavior of retagging matching cells
+        as 'gas' with zeroed concentrations, leaving the mesh topology (and
+        n_cells) unchanged -- true removal of an interior column would
+        produce a non-manifold top surface that breaks the box-mesh
+        assumptions of the next deposit().
         """
         poly_cm = [(x * UM, y * UM) for x, y in poly] if poly else []
-        self._emit(_c.proc_etch(self._st, depth * UM, poly_cm))
+        self._emit(_c.proc_etch(self._st, depth * UM, poly_cm, material))
         return self
 
     def oxidize(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
