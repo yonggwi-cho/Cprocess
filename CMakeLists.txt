@@ -29,6 +29,7 @@ add_library(cprocess_core
   src/mc_implant.cpp
   src/diffusion.cpp
   src/vtk_writer.cpp
+  src/state_io.cpp
   src/process.cpp
   src/deck.cpp)
 target_include_directories(cprocess_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -51,7 +52,7 @@ add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
 target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo)
+foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})

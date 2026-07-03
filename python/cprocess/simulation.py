@@ -322,6 +322,24 @@ class Simulation:
         self._emit(_c.proc_save(self._st, path))
         return self
 
+    def save_state(self, path: str) -> "Simulation":
+        """Save the full simulation state to a binary CPRC1 file."""
+        self._emit(_c.proc_save_state(self._st, path))
+        return self
+
+    def load_state(self, path: str) -> "Simulation":
+        """Restore a state previously written by save_state()."""
+        self._emit(_c.proc_load_state(self._st, path))
+        return self
+
+    def profile(self, species: str, x: float, y: float):
+        """Depth profile at column (x, y) [um].
+        Returns (z_um, conc) numpy arrays sorted by depth."""
+        pairs = _c.proc_profile1d(self._st, species, x * UM, y * UM)
+        z = np.array([p[0] for p in pairs]) / UM
+        c = np.array([p[1] for p in pairs])
+        return z, c
+
     # -- parameter overrides (P1-10) --------------------------------------------
     def set_param(self, key: str, value: float) -> "Simulation":
         """Override a physical parameter (raw core units: cm^2/s, eV, cm^-3,

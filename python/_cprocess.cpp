@@ -584,6 +584,28 @@ PYBIND11_MODULE(_cprocess, m) {
       },
       py::arg("state"), py::arg("path"));
 
+  m.def("proc_save_state",
+      [](SimState& st, const std::string& path) {
+        std::ostringstream log;
+        proc::save_state(st, path, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("path"));
+
+  m.def("proc_load_state",
+      [](SimState& st, const std::string& path) {
+        std::ostringstream log;
+        proc::load_state(st, path, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("path"));
+
+  m.def("proc_profile1d",
+      [](const SimState& st, const std::string& species, double x, double y) {
+        return proc::profile1d(st, species, x, y);
+      },
+      py::arg("state"), py::arg("species"), py::arg("x"), py::arg("y"));
+
   m.def("proc_active_field",
       [](const SimState& st, const std::string& species, double temp_k) {
         return vec_to_np(proc::active_field(st, species, temp_k, nullptr));

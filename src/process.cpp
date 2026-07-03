@@ -15,6 +15,7 @@
 #include "cprocess/oxidation.hpp"
 #include "cprocess/param_db.hpp"
 #include "cprocess/remesh.hpp"
+#include "cprocess/state_io.hpp"
 #include "cprocess/vtk_writer.hpp"
 
 namespace cp {
@@ -1062,6 +1063,54 @@ double get_param(const std::string& key, double fallback) {
 
 std::map<std::string, double> list_params() {
   return ParamDB::instance().all();
+}
+
+void save_state(SimState& st, const std::string& path, std::ostream* log) {
+  need_mesh(st);
+  if (st.has_stack)
+    throw std::runtime_error("save_state: strip photoresist stack before save");
+  write_state(st, path);
+  if (log)
+    *log << "[save_state] wrote " << path << " (" << st.mesh.cells.size()
+         << " cells, " << st.fields.size() << " fields)\n";
+}
+
+void load_state(SimState& st, const std::string& path, std::ostream* log) {
+  read_state(st, path);
+  if (log)
+    *log << "[load_state] " << path << ": " << st.mesh.cells.size()
+         << " cells\n";
+}
+
+std::vector<std::pair<double, double>> profile1d(const SimState& st,
+                                                  const std::string& species,
+                                                  double x_cm, double y_cm) {
+  auto fit = st.fields.find(species);
+  if (fit == st.fields.end())
+    throw std::runtime_error("no field: " + species);
+  const auto& conc = fit->second;
+
+  std::vector<std::pair<double, double>> out;
+  const std::size_t nc = st.mesh.cells.size();
+  for (std::size_t ci = 0; ci < nc; ++ci) {
+    auto mit = st.region_material.find(st.mesh.cell_region[ci]);
+    if (mit != st.region_material.end() && lower(mit->second) == "gas")
+      continue;
+    double xmin = 1e300, xmax = -1e300, ymin = 1e300, ymax = -1e300;
+    for (int nid : st.mesh.cells[ci]) {
+      const Vec3& p = st.mesh.nodes[nid];
+      xmin = std::min(xmin, p.x);
+      xmax = std::max(xmax, p.x);
+      ymin = std::min(ymin, p.y);
+      ymax = std::max(ymax, p.y);
+    }
+    if (x_cm < xmin || x_cm > xmax || y_cm < ymin || y_cm > ymax) continue;
+    const double c = (ci < conc.size()) ? conc[ci] : 0.0;
+    out.emplace_back(st.mesh.cell_cent[ci].z, c);
+  }
+  std::sort(out.begin(), out.end(),
+           [](const auto& a, const auto& b) { return a.first < b.first; });
+  return out;
 }
 
 }  // namespace proc

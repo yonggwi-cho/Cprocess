@@ -133,6 +133,20 @@ void refine(SimState& st, const std::string& species, double rel_grad_thresh,
 
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
+// Binary CPRC1 state save/load (P1-11). save_state throws if a photoresist
+// stack is present (strip it first) -- the stack is never serialized.
+// load_state rebuilds mesh topology via finalize() and resets stack members.
+void save_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
+void load_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
+
+// 1-D depth profile of `species` at column (x_cm, y_cm): every non-gas cell
+// whose xy-bbox contains the point, sorted by cell_cent.z ascending. Throws
+// if the species field does not exist; returns an empty vector if no cell's
+// xy-bbox contains the point.
+std::vector<std::pair<double, double>> profile1d(const SimState& st,
+                                                  const std::string& species,
+                                                  double x_cm, double y_cm);
+
 // Per-cell electrically active concentration of `species` at temp_k [K]
 // (solid-solubility clamp, P1-3). temp_k <= 0 selects st.last_temp. Throws if
 // the field does not exist.

@@ -803,6 +803,34 @@ def test_etch_depo_p17():
     check(n4 == n3, "etch: polygon etch leaves n_cells unchanged (retag)")
 
 
+def test_save_load_state_python():
+    """P1-11: binary CPRC1 save/load roundtrip + profile1d."""
+    print("test_save_load_state_python")
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=1.0, nx=6, ny=6, nz=12)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.implant("P", dose=1e13, energy=50)
+
+    path = tempfile.NamedTemporaryFile(suffix=".cprc", delete=False).name
+    try:
+        sim.save_state(path)
+        sim2 = cp.Simulation()
+        sim2.load_state(path)
+
+        check(sim2.n_cells == sim.n_cells, "save_state/load_state: n_cells matches")
+        check(np.array_equal(sim2.field("B"), sim.field("B")),
+              "save_state/load_state: B field bit-identical")
+
+        sim2.diffuse(time=1, temp=1000)
+        z, c = sim2.profile("B", 0.5, 0.5)
+        check(len(z) > 0, "profile: non-empty column")
+        check(np.all(np.diff(z) >= 0), "profile: z monotone non-decreasing")
+        check(len(c) == len(z), "profile: conc/z same length")
+    finally:
+        os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -836,4 +864,5 @@ if __name__ == "__main__":
     test_params_python()
     test_refine_python()
     test_etch_depo_p17()
+    test_save_load_state_python()
     print("\nall comprehensive Simulation tests passed")
