@@ -846,6 +846,31 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   st.last_temp = temp_at(opts, opts.time);
 }
 
+void refine(SimState& st, const std::string& species, double rel_grad_thresh,
+           int max_passes, std::ostream* log) {
+  need_mesh(st);
+  auto it = st.fields.find(species);
+  if (it == st.fields.end() || it->second.empty())
+    throw std::runtime_error("refine: no field '" + species + "'");
+
+  std::vector<std::vector<double>*> field_ptrs;
+  int key_index = -1, idx = 0;
+  for (auto& [sym, conc] : st.fields) {
+    if (sym == species) key_index = idx;
+    field_ptrs.push_back(&conc);
+    ++idx;
+  }
+
+  const int nc0 = static_cast<int>(st.mesh.cells.size());
+  RefineResult rr = refine_gradient(st.mesh, field_ptrs, key_index,
+                                    rel_grad_thresh, max_passes);
+
+  if (log)
+    *log << "[refine] " << species << " passes=" << rr.n_passes
+         << " split=" << rr.n_split_total << " cells " << nc0 << " -> "
+         << rr.n_cells_after << "\n";
+}
+
 void save(SimState& st, const std::string& path, std::ostream* log) {
   need_mesh(st);
   const std::size_t nc = st.mesh.cells.size();

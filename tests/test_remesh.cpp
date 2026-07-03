@@ -1,8 +1,11 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include <cmath>
+
 #include "cprocess/ale_mover.hpp"
 #include "cprocess/mesh.hpp"
+#include "cprocess/process.hpp"
 #include "cprocess/remesh.hpp"
 #include "cprocess/topology.hpp"
 #include "test_util.hpp"
@@ -465,6 +468,122 @@ int main() {
     double mass1 = 0;
     for (std::size_t i = 0; i < field.size(); ++i) mass1 += field[i] * m.cell_vol[i];
     CHECK_NEAR(mass1, mass0, 1e-12 * mass0);
+  }
+
+  // ---- refine_gradient: sharp Gaussian band gets refined, far field doesn't --
+  {
+    // Box 0.4x0.4x0.8 um in cm, nx=ny=6, nz=16.
+    const double um = 1e-4;
+    Mesh m = make_box_mesh(0, 0.4 * um, 0, 0.4 * um, 0, 0.8 * um, 6, 6, 16);
+    const double z_top = 0.8 * um;
+    const double rp = 0.1 * um, drp = 0.02 * um;
+
+    std::vector<double> B(m.cells.size());
+    std::vector<double> P(m.cells.size(), 1e15);
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double z = m.cell_cent[i].z;
+      const double dz = (z_top - z) - rp;
+      B[i] = 1e19 * std::exp(-(dz * dz) / (2 * drp * drp));
+    }
+
+    auto count_band = [&](const Mesh& mm) {
+      int n_band = 0, n_far = 0;
+      for (const auto& c : mm.cell_cent) {
+        const double depth = z_top - c.z;
+        if (std::fabs(depth - rp) <= 2 * drp) ++n_band;
+        if (depth > rp + 6 * drp) ++n_far;
+      }
+      return std::pair<int, int>{n_band, n_far};
+    };
+    const auto [band0, far0] = count_band(m);
+
+    double mass_B0 = 0, mass_P0 = 0;
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      mass_B0 += B[i] * m.cell_vol[i];
+      mass_P0 += P[i] * m.cell_vol[i];
+    }
+
+    std::vector<std::vector<double>*> fields = {&B, &P};
+    RefineResult rr = refine_gradient(m, fields, 0, 0.5, 2);
+    std::printf("refine_gradient: passes=%d split=%d cells %d -> %d\n",
+               rr.n_passes, rr.n_split_total, rr.n_cells_before, rr.n_cells_after);
+
+    const auto [band1, far1] = count_band(m);
+    std::printf("band cells %d -> %d, far cells %d -> %d\n", band0, band1, far0, far1);
+    CHECK(band1 > 1.5 * band0);
+    CHECK(far1 == far0);
+
+    CHECK(B.size() == m.cells.size());
+    CHECK(P.size() == m.cells.size());
+    double mass_B1 = 0, mass_P1 = 0;
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      mass_B1 += B[i] * m.cell_vol[i];
+      mass_P1 += P[i] * m.cell_vol[i];
+    }
+    CHECK_NEAR(mass_B1, mass_B0, 1e-9 * mass_B0);
+    CHECK_NEAR(mass_P1, mass_P0, 1e-9 * mass_P0);
+
+    CHECK(mesh_quality(m).min_q > 0);
+    // total_volume conservation.
+  }
+
+  // ---- refine_gradient: growth cap ------------------------------------------
+  {
+    const double um = 1e-4;
+    Mesh m = make_box_mesh(0, 0.4 * um, 0, 0.4 * um, 0, 0.8 * um, 6, 6, 16);
+    const double z_top = 0.8 * um;
+    const double rp = 0.1 * um, drp = 0.02 * um;
+    std::vector<double> B(m.cells.size());
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double z = m.cell_cent[i].z;
+      const double dz = (z_top - z) - rp;
+      B[i] = 1e19 * std::exp(-(dz * dz) / (2 * drp * drp));
+    }
+    const int nc0 = static_cast<int>(m.cells.size());
+    std::vector<std::vector<double>*> fields = {&B};
+    RefineResult rr = refine_gradient(m, fields, 0, 0.01, 10, 4.0);
+    std::printf("growth cap: nc0=%d nc1=%d (cap=%d)\n", nc0, rr.n_cells_after, 4 * nc0);
+    CHECK(rr.n_cells_after <= 4 * nc0);
+  }
+
+  // ---- refine_gradient: uniform field is unchanged --------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    std::vector<double> B(m.cells.size(), 1e15);
+    const int nc0 = static_cast<int>(m.cells.size());
+    std::vector<std::vector<double>*> fields = {&B};
+    RefineResult rr = refine_gradient(m, fields, 0, 0.5, 2);
+    CHECK(rr.n_split_total == 0);
+    CHECK(rr.n_cells_after == nc0);
+  }
+
+  // ---- proc::refine: end-to-end through SimState -----------------------------
+  {
+    SimState st;
+    const double um = 1e-4;
+    proc::mesh_box(st, 0, 0.4 * um, 0, 0.4 * um, 0, 0.8 * um, 6, 6, 16);
+    const double rp = 0.1 * um, drp = 0.02 * um;
+    const double z_top = 0.8 * um;
+
+    std::vector<double>& B = st.fields["B"];
+    B.assign(st.mesh.cells.size(), 0.0);
+    for (std::size_t i = 0; i < st.mesh.cells.size(); ++i) {
+      const double z = st.mesh.cell_cent[i].z;
+      const double dz = (z_top - z) - rp;
+      B[i] = 1e19 * std::exp(-(dz * dz) / (2 * drp * drp));
+    }
+    double mass0 = 0;
+    for (std::size_t i = 0; i < B.size(); ++i) mass0 += B[i] * st.mesh.cell_vol[i];
+
+    const int nc0 = static_cast<int>(st.mesh.cells.size());
+    proc::refine(st, "B", 0.5, 2);
+    std::printf("proc::refine: cells %d -> %zu\n", nc0, st.mesh.cells.size());
+    CHECK(st.mesh.cells.size() > static_cast<std::size_t>(nc0));
+
+    double mass1 = 0;
+    for (std::size_t i = 0; i < st.fields["B"].size(); ++i)
+      mass1 += st.fields["B"][i] * st.mesh.cell_vol[i];
+    CHECK_NEAR(mass1, mass0, 1e-9 * mass0);
   }
 
   std::printf("remesh tests passed\n");

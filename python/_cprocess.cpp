@@ -524,6 +524,17 @@ PYBIND11_MODULE(_cprocess, m) {
       "Blanket thermal oxidation (Deal-Grove). time in s, temp in K.\n"
       "Returns a log string.");
 
+  m.def("proc_refine",
+      [](SimState& st, const std::string& species, double thresh, int passes) {
+        std::ostringstream log;
+        proc::refine(st, species, thresh, passes, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("species"),
+      py::arg("threshold") = 0.5, py::arg("passes") = 2,
+      "Adaptively split mesh edges where `species` has steep gradients.\n"
+      "Returns a log string.");
+
   m.def("proc_strip",
       [](SimState& st) {
         std::ostringstream log;

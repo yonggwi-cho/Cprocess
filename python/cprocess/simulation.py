@@ -236,6 +236,18 @@ class Simulation:
         self._emit(_c.proc_strip(self._st))
         return self
 
+    def refine(self, species: str, threshold: float = 0.5,
+              passes: int = 2) -> "Simulation":
+        """Adaptively split mesh edges where `species` has steep gradients.
+
+        `threshold` is a dimensionless relative concentration-difference
+        threshold across a face (no unit conversion). `passes` caps the
+        number of split rounds.
+        """
+        self._emit(_c.proc_refine(self._st, species, float(threshold),
+                                  int(passes)))
+        return self
+
     # -- diffusion -------------------------------------------------------------
     def bc(self, species: str, patch: str, conc: float) -> "Simulation":
         """Fixed-concentration Dirichlet BC on a named boundary patch."""

@@ -112,6 +112,15 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts,
 double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
                std::ostream* log = nullptr);
 
+// Adaptively splits mesh edges where `species` has steep concentration
+// gradients (M-2). rel_grad_thresh: relative concentration difference across
+// a face that triggers refinement (dimensionless, default 0.5 at the
+// pybind/Python layer). max_passes: split-pass cap (default 2). Every field
+// in st.fields (species included) is carried through the splits by exact
+// parent-cell copy; the stack mesh (during photo) is never touched.
+void refine(SimState& st, const std::string& species, double rel_grad_thresh,
+           int max_passes, std::ostream* log = nullptr);
+
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
 // Per-cell electrically active concentration of `species` at temp_k [K]

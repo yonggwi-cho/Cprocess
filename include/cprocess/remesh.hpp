@@ -112,4 +112,24 @@ RepairResult repair_quality(Mesh& m, std::vector<std::vector<double>*>* fields,
 RepairResult repair_quality(Mesh& m, double q_thresh = 0.1, int max_rounds = 3,
                             int smooth_iters = 5);
 
+struct RefineResult {
+  int n_passes = 0;        // number of passes executed
+  int n_split_total = 0;   // total edges split
+  int n_cells_before = 0, n_cells_after = 0;
+};
+
+// Gradient-driven adaptive refinement. `fields` holds every per-cell field
+// that must be carried through the splits (redistribute_field, exact parent
+// copy); `key_index` selects which entry of `fields` drives the gradient
+// indicator (throws std::invalid_argument if out of range). Each pass scans
+// internal faces; a face is a "steep" candidate when
+//   |C_owner - C_neigh| > rel_grad_thresh * max(C_owner, C_neigh, 1e-3*global_max)
+// where global_max is the current max of the key field. For every steep face,
+// the owner cell's longest edge is added (deduplicated) to the split batch.
+// Stops when no candidates remain, `max_passes` is reached, or the cell count
+// would exceed n_cells_before * max_growth.
+RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
+                             int key_index, double rel_grad_thresh,
+                             int max_passes, double max_growth = 4.0);
+
 }  // namespace cp

@@ -749,6 +749,24 @@ def test_params_python():
     check(sim.get_param("B.fi") == 1.0, "B.fi restored to default after test")
 
 
+def test_refine_python():
+    """Simulation.refine() densifies the high-gradient band, conserving dose."""
+    print("test_refine_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=24)
+    sim.region("silicon")
+    sim.implant("B", dose=1e14, rp=0.3, drp=0.05)
+    n0 = sim.n_cells
+    d0 = sim.dose("B")
+    sim.refine("B", threshold=0.5, passes=2)
+    n1 = sim.n_cells
+    d1 = sim.dose("B")
+    print(f"  cells {n0} -> {n1}, dose {d0:.4e} -> {d1:.4e}")
+    check(n1 > n0, "refine increased cell count")
+    check(abs(d1 - d0) / d0 < 1e-9, "refine conserves dose")
+    check(len(sim.field("B")) == n1, "field resized to new mesh")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -780,4 +798,5 @@ if __name__ == "__main__":
     test_rta_ramp_python()
     test_pearson_python()
     test_params_python()
+    test_refine_python()
     print("\nall comprehensive Simulation tests passed")

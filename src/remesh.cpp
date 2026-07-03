@@ -4,6 +4,7 @@
 #include <cmath>
 #include <numeric>
 #include <set>
+#include <stdexcept>
 
 #include "cprocess/topology.hpp"
 
@@ -458,6 +459,80 @@ RepairResult repair_quality(Mesh& m, std::vector<std::vector<double>*>* fields,
 RepairResult repair_quality(Mesh& m, double q_thresh, int max_rounds,
                             int smooth_iters) {
   return repair_quality(m, nullptr, q_thresh, max_rounds, smooth_iters);
+}
+
+RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
+                             int key_index, double rel_grad_thresh,
+                             int max_passes, double max_growth) {
+  if (key_index < 0 || static_cast<std::size_t>(key_index) >= fields.size())
+    throw std::invalid_argument("refine_gradient: key_index out of range");
+
+  RefineResult res;
+  res.n_cells_before = static_cast<int>(m.cells.size());
+  const int max_cells = static_cast<int>(res.n_cells_before * max_growth);
+
+  for (int pass = 0; pass < max_passes; ++pass) {
+    if (static_cast<int>(m.cells.size()) >= max_cells) break;
+    const std::vector<double>& conc = *fields[key_index];
+    double global_max = 0.0;
+    for (double v : conc) if (v > global_max) global_max = v;
+    if (global_max <= 0) break;
+    const double floor_val = 1e-3 * global_max;
+
+    std::vector<std::pair<int, int>> candidates;
+    std::set<std::pair<int, int>> seen;
+    for (const auto& f : m.faces) {
+      if (f.neigh < 0) continue;
+      const double c_o = conc[f.owner], c_n = conc[f.neigh];
+      const double thresh = rel_grad_thresh * std::max({c_o, c_n, floor_val});
+      if (std::fabs(c_o - c_n) <= thresh) continue;
+
+      const auto& c = m.cells[f.owner];
+      int best = -1;
+      double best_len2 = -1;
+      for (int e = 0; e < 6; ++e) {
+        const int va = c[kEdges[e][0]], vb = c[kEdges[e][1]];
+        const Vec3 d = m.nodes[va] - m.nodes[vb];
+        const double len2 = dot(d, d);
+        if (len2 > best_len2) { best_len2 = len2; best = e; }
+      }
+      int a = c[kEdges[best][0]], b = c[kEdges[best][1]];
+      if (a > b) std::swap(a, b);
+      if (seen.insert({a, b}).second) candidates.push_back({a, b});
+    }
+
+    if (candidates.empty()) break;
+
+    // Apply the batch one edge at a time so a single pass cannot blow past
+    // max_cells (a face-driven candidate set can be a large fraction of all
+    // edges when rel_grad_thresh is small). Before each split, use a fresh
+    // topology to know exactly how many cells that split will add, and skip
+    // (not abort) edges that would push the total at or beyond the cap --
+    // other, cheaper edges later in the batch may still fit.
+    for (const auto& edge : candidates) {
+      if (static_cast<int>(m.cells.size()) >= max_cells) break;
+
+      MeshTopology etopo;
+      etopo.build(m);
+      const std::size_t inc = etopo.edge_incident(edge.first, edge.second).size();
+      if (inc == 0) continue;
+      if (static_cast<int>(m.cells.size() + inc) > max_cells) continue;
+
+      SplitResult sr = split_edges(m, {edge});
+      res.n_split_total += sr.n_split;
+
+      for (auto* vecp : fields) {
+        if (!vecp) continue;
+        *vecp = redistribute_field(*vecp, sr.cell_parent);
+      }
+    }
+    ++res.n_passes;
+
+    if (static_cast<int>(m.cells.size()) >= max_cells) break;
+  }
+
+  res.n_cells_after = static_cast<int>(m.cells.size());
+  return res;
 }
 
 }  // namespace cp
