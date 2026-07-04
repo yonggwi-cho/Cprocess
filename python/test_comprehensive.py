@@ -831,6 +831,116 @@ def test_save_load_state_python():
         os.unlink(path)
 
 
+def _build_test_gds(path):
+    """Write a minimal GDSII stream (square on layer 2, triangle on layer 5,
+    plus an unrecognized PATH-ish record) matching tests/test_gds.cpp's
+    byte-level writer, so this Python test exercises the real reader."""
+    import struct
+
+    def rec(code, payload=b""):
+        length = 4 + len(payload)
+        return struct.pack(">HH", length, code) + payload
+
+    def rec_i16(code, vals):
+        return rec(code, struct.pack(f">{len(vals)}h", *vals))
+
+    def rec_i32(code, vals):
+        return rec(code, struct.pack(f">{len(vals)}i", *vals))
+
+    def rec_str(code, s):
+        b = s.encode("ascii")
+        if len(b) % 2 != 0:
+            b += b"\0"
+        return rec(code, b)
+
+    units = rec(0x0305, bytes([
+        0x3E, 0x41, 0x89, 0x37, 0x4B, 0xC6, 0xA7, 0xF0,  # 1e-3
+        0x39, 0x44, 0xB8, 0x2F, 0xA0, 0x9B, 0x5A, 0x54,  # 1e-9
+    ]))
+
+    out = b""
+    out += rec(0x0102)                       # HEADER
+    out += rec_i16(0x0202, [0] * 12)         # BGNLIB
+    out += rec_str(0x0206, "LIB")            # LIBNAME
+    out += units                              # UNITS
+    out += rec_i16(0x0502, [0] * 12)         # BGNSTR
+    out += rec_str(0x0606, "TOP")            # STRNAME
+
+    # BOUNDARY layer 2: 1 um square, closed.
+    out += rec(0x0800)
+    out += rec_i16(0x0D02, [2])
+    out += rec_i16(0x0E02, [0])
+    out += rec_i32(0x1003, [0, 0, 1000, 0, 1000, 1000, 0, 1000, 0, 0])
+    out += rec(0x1100)
+
+    # Unrecognized record type mixed in -- must be skipped, not crash.
+    out += rec(0x0906, struct.pack(">4i", 0, 0, 100, 100))
+
+    # BOUNDARY layer 5: triangle, closed.
+    out += rec(0x0800)
+    out += rec_i16(0x0D02, [5])
+    out += rec_i16(0x0E02, [0])
+    out += rec_i32(0x1003, [0, 0, 500, 0, 250, 500, 0, 0])
+    out += rec(0x1100)
+
+    out += rec(0x0700)  # ENDSTR
+    out += rec(0x0400)  # ENDLIB
+
+    with open(path, "wb") as f:
+        f.write(out)
+
+
+def test_load_gds_python():
+    """load_gds() reads polygons by layer; mask_polygon() blocks dose outside."""
+    print("test_load_gds_python")
+    with tempfile.NamedTemporaryFile(suffix=".gds", delete=False) as f:
+        path = f.name
+    try:
+        _build_test_gds(path)
+
+        sim = cp.Simulation()
+        sim.mesh(x=0.4, y=0.4, z=0.4, nx=4, ny=4, nz=4)
+        sim.region("silicon")
+
+        squares = sim.load_gds(path, layer=2)
+        check(len(squares) == 1, "load_gds: one polygon on layer 2")
+        check(len(squares[0]) == 4, "load_gds: square has 4 vertices (deduped)")
+        xs = sorted(x for x, y in squares[0])
+        check(abs(xs[0] - 0.0) < 1e-6 and abs(xs[-1] - 1.0) < 1e-6,
+              "load_gds: square coords in micrometres (0..1 um)")
+
+        triangles = sim.load_gds(path, layer=5)
+        check(len(triangles) == 1 and len(triangles[0]) == 3,
+              "load_gds: triangle on layer 5, 3 vertices")
+
+        none_layer = sim.load_gds(path, layer=1)
+        check(len(none_layer) == 0, "load_gds: no polygons on unused layer")
+
+        all_polys = sim.load_gds(path, layer=-1)
+        check(len(all_polys) == 2, "load_gds: layer=-1 returns all polygons")
+
+        # mask_polygon integration: dose concentrates inside the loaded square.
+        sim2 = cp.Simulation()
+        sim2.mesh(x=1.0, y=1.0, z=0.5, nx=8, ny=8, nz=4)
+        sim2.region("silicon")
+        sim2.photo(resist=0.4)
+        sq_um = sim.load_gds(path, layer=2)[0]  # (0,0)-(1,1) um square
+        sim2.mask_polygon(sq_um)
+        sim2.implant("P", dose=5e15, energy=30, mc=True, ions=40000, seed=7)
+        sim2.strip()
+
+        xyz = sim2.cell_centroids
+        P = sim2.field("P")
+        inside = (xyz[:, 0] < 1.0) & (xyz[:, 1] < 1.0)
+        q_in = float(np.sum(P[inside])) if inside.any() else 0.0
+        q_out = float(np.sum(P[~inside])) if (~inside).any() else 0.0
+        check(q_in > 0, "load_gds+mask_polygon: dose inside the GDS polygon")
+        check(q_in > 3 * q_out,
+              "load_gds+mask_polygon: resist blocks dose outside the polygon")
+    finally:
+        os.unlink(path)
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -865,4 +975,5 @@ if __name__ == "__main__":
     test_refine_python()
     test_etch_depo_p17()
     test_save_load_state_python()
+    test_load_gds_python()
     print("\nall comprehensive Simulation tests passed")

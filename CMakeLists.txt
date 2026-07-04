@@ -15,6 +15,7 @@ add_library(cprocess_core
   src/box_mesh.cpp
   src/cell_locator.cpp
   src/gmsh_reader.cpp
+  src/gds_reader.cpp
   src/sparse.cpp
   src/topology.cpp
   src/remesh.cpp
@@ -52,7 +53,7 @@ add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
 target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io)
+foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})

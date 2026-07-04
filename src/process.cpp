@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "cprocess/field_transfer.hpp"
+#include "cprocess/gds_reader.hpp"
 #include "cprocess/gmsh_reader.hpp"
 #include "cprocess/oxidation.hpp"
 #include "cprocess/param_db.hpp"
@@ -953,6 +954,13 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   // plain equilibrium anneal — run_ted still works (S = 1 everywhere).
   auto& psi = st.fields["I"];
   psi.resize(st.mesh.cells.size(), 0.0);
+  // Vacancy excess and {311} cluster reservoir (P2-1). Both are created here
+  // (proc layer) so Python/C++ callers can inspect "V"/"C311" like any other
+  // field; run_ted() persists them across repeated diffuse_ted() calls.
+  auto& v = st.fields["V"];
+  v.resize(st.mesh.cells.size(), 0.0);
+  auto& c311 = st.fields["C311"];
+  c311.resize(st.mesh.cells.size(), 0.0);
   if (log) {
     *log << "[ted] T=";
     if (opts.temp_profile.empty()) {
@@ -970,7 +978,7 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     *log << "\n";
   }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
-  solver.run_ted(fields, psi, st.bcs, opts);
+  solver.run_ted(fields, psi, v, c311, st.bcs, opts);
   st.last_temp = temp_at(opts, opts.time);
 }
 
@@ -1111,6 +1119,15 @@ std::vector<std::pair<double, double>> profile1d(const SimState& st,
   std::sort(out.begin(), out.end(),
            [](const auto& a, const auto& b) { return a.first < b.first; });
   return out;
+}
+
+std::vector<std::vector<std::pair<double, double>>> load_gds(
+    const std::string& path, int layer, std::ostream* log) {
+  auto polys = read_gds(path, layer);
+  if (log)
+    *log << "[load_gds] " << polys.size() << " polygons from layer " << layer
+         << "\n";
+  return polys;
 }
 
 }  // namespace proc

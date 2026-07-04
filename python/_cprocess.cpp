@@ -634,6 +634,14 @@ PYBIND11_MODULE(_cprocess, m) {
       []() { return proc::list_params(); },
       "Currently-set parameter overrides (not the full supported key set).");
 
+  m.def("load_gds",
+      [](const std::string& path, int layer) {
+        return proc::load_gds(path, layer, nullptr);
+      },
+      py::arg("path"), py::arg("layer") = -1,
+      "Read BOUNDARY polygons (cm) from a GDSII stream file on `layer` "
+      "(layer<0: all layers). Free function -- does not take a SimState.");
+
   m.def("find_patch",
       [](const SimState& st, const std::string& name) {
         return st.mesh.find_patch(name);

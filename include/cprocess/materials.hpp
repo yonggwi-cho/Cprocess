@@ -5,6 +5,8 @@
 
 namespace cp {
 
+class ParamDB;
+
 // ── Runtime parameter overrides (P1-10, cp::ParamDB) ──
 // The functions below read every physical constant through
 // ParamDB::instance().get(key, fallback) at call time, so cp::ParamDB::set()
@@ -123,6 +125,34 @@ double active_concentration(const Dopant& d, double conc, double temp_k);
 double interstitial_cstar(double temp_k);
 double interstitial_diffusivity(double temp_k);
 double interstitial_recomb_rate(double temp_k);
+
+// ── Full point-defect model (P2-1): coupled I + V + {311} clusters ──
+// All quantities are read from ParamDB (see keys below), evaluated at temp_k.
+// This supersedes the single-psi model above inside run_ted(); the plain
+// interstitial_* functions remain for backward-compatible callers.
+//
+//   pd.ci_star.pre / pd.ci_star.e   -- C_I* = pre*exp(-E/kT)  [cm^-3]
+//   pd.cv_star.pre / pd.cv_star.e   -- C_V* = pre*exp(-E/kT)  [cm^-3]
+//   pd.di.pre       / pd.di.e       -- D_I  = pre*exp(-E/kT)  [cm^2/s]
+//   pd.dv.pre       / pd.dv.e       -- D_V  = pre*exp(-E/kT)  [cm^2/s]
+//   pd.kbulk.factor                 -- k_bulk = factor*4*pi*a_Si*(D_I+D_V)
+//   pd.c311.ktrap.factor            -- k_trap = factor*4*pi*a_Si*D_I
+//   pd.c311.nu0                     -- {311} emission attempt frequency [1/s]
+//   pd.c311.eb                      -- {311} binding energy [eV]
+//   pd.damage.v_fraction            -- initial V/I seed split (see seed logic)
+//   pd.c311.cref                    -- reference density [cm^-3] turning
+//                                       k_trap [cm^3/s] into an effective
+//                                       first-order {311} trap rate
+//                                       k_trap_eff = k_trap*pd.c311.cref
+//                                       (run_ted only; see src/diffusion.cpp)
+struct PointDefectParams {
+  double ci_star = 0, cv_star = 0;  // cm^-3 (equilibrium, at T)
+  double d_i = 0, d_v = 0;          // cm^2/s
+  double k_bulk = 0;                // cm^3/s (bimolecular I-V recombination)
+  double k_trap = 0;                // cm^3/s (I capture by {311}, nominal)
+  double k_emit = 0;                // 1/s ({311} emission rate = nu0*exp(-eb/kT))
+};
+PointDefectParams point_defect_params(double temp_k, const ParamDB& db);
 
 // Interpolates the range table (linear in log E). Returns false if the
 // dopant has no table; clamps outside the tabulated energy range.

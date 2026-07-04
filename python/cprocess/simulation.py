@@ -194,6 +194,23 @@ class Simulation:
         self._emit(_c.proc_mask_polygon(self._st, poly_cm))
         return self
 
+    def load_gds(self, path: str, layer: int = -1, scale: float = 1.0):
+        """Read BOUNDARY polygons from a GDSII stream file.
+
+        path: path to a .gds file.
+        layer: GDS layer number to keep (-1: all layers, default).
+        scale: extra multiplier applied on top of the GDS UNITS-derived
+            scale (default 1.0 -- normally leave this alone).
+
+        Returns a list of polygons, each a list of (x, y) tuples in
+        micrometres, suitable to pass directly to mask_polygon()/
+        deposit(poly=...)/etch(poly=...). This is a query method: it
+        returns data, not self.
+        """
+        polys_cm = _c.load_gds(path, int(layer))
+        return [[(x / UM * scale, y / UM * scale) for x, y in poly]
+                for poly in polys_cm]
+
     def deposit(self, material: str, thickness: float,
                 nz: int = 2, poly=None) -> "Simulation":
         """Deposit a film on the top surface. Multi-layer deposits are

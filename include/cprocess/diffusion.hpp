@@ -91,6 +91,28 @@ class DiffusionSolver {
   void run_ted(std::vector<SpeciesField>& fields, std::vector<double>& psi,
                const std::vector<DirichletBC>& bcs, const DiffuseOpts& opts);
 
+  // Full point-defect TED (P2-1): co-solves C_I and C_V (absolute
+  // concentrations, internally CI = C_I* + psi, CV = C_V* + v_fraction*psi)
+  // together with an immobile {311} cluster field `c311` (I capture/emission
+  // reservoir). On return, `psi` is written back as CI - C_I* (>=0 clamped)
+  // for backward compatibility with the old psi-only API, and `c311` holds
+  // the updated cluster concentration (persisted by the caller across calls).
+  // The two-argument run_ted() above is a thin wrapper using a scratch,
+  // discarded c311.
+  void run_ted(std::vector<SpeciesField>& fields, std::vector<double>& psi,
+               std::vector<double>& c311, const std::vector<DirichletBC>& bcs,
+               const DiffuseOpts& opts);
+
+  // Full form: also reads/writes the vacancy excess field `v` (C_V - C_V*),
+  // so callers that persist "V" across repeated anneal calls (proc::
+  // diffuse_ted) see genuine vacancy transport rather than a value
+  // re-derived from psi every call. The three-argument overload above
+  // forwards here with a scratch, discarded `v` (its per-call vacancy
+  // excess then defaults to pd.damage.v_fraction * psi, per the spec).
+  void run_ted(std::vector<SpeciesField>& fields, std::vector<double>& psi,
+               std::vector<double>& v, std::vector<double>& c311,
+               const std::vector<DirichletBC>& bcs, const DiffuseOpts& opts);
+
  private:
   enum FaceKind : char {
     kInactive = 0,   // both sides masked

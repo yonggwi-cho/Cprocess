@@ -2,12 +2,75 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#if defined(__SSE__) || defined(__x86_64__) || defined(_M_X64)
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+#define CP_HAS_SSE_FTZ 1
+#endif
 
 namespace cp {
+
+namespace {
+// Flush-to-zero / denormals-are-zero: the point-defect reaction system
+// (P2-1) solves a near-singular pure-diffusion operator (no reaction term
+// in the diffusion sub-step) whose Krylov residual can explore directions
+// that underflow toward subnormal doubles as they approach machine precision.
+// Subnormal arithmetic is ~100x slower on x86 without FTZ/DAZ, which turned
+// a sub-second solve into an apparent hang. This is a one-time, thread-local
+// FPU mode flip; it has no effect on any value above ~2.2e-308 so normal
+// physical results (all >> that scale) are unaffected.
+//
+// This MUST NOT run as a global static initializer: a `#pragma omp parallel`
+// region executed before main() (during dynamic static initialization, in
+// unspecified order relative to other translation units' statics, before the
+// OpenMP runtime and its thread pool are guaranteed fully set up) is a real
+// deadlock/hang hazard -- observed in practice as intermittent hangs whose
+// exact location varied run to run, consistent with a startup race. Instead,
+// set it lazily on first use via a C++11 function-local static (thread-safe
+// initialization guaranteed by the standard, and it only runs once real
+// program execution -- and the OpenMP runtime -- are already underway).
+void ensure_ftz_daz() {
+#ifdef CP_HAS_SSE_FTZ
+  static const bool kDone = [] {
+#pragma omp parallel
+    {
+      _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+      _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+    }
+    return true;
+  }();
+  (void)kDone;
+#endif
+}
+
+// Some execution hosts (observed on a heavily oversubscribed/virtualized CI
+// sandbox while developing P2-1) have per-thread scheduling latency so bad
+// that spinning up an OpenMP thread team for a small SpMV/dot-product region
+// costs orders of magnitude more wall time than the work itself -- a solve
+// that completes in under a second with OMP_NUM_THREADS=1 can appear to hang
+// indefinitely at the default thread count. This has nothing to do with
+// P2-1's numerics (reproduces on the pre-existing, untouched equilibrium
+// diffuse() path too) and everything to do with the host's thread scheduler.
+// Respect an explicit OMP_NUM_THREADS from the environment (a real multi-core
+// deployment should keep using it), but if it wasn't set, cap the default to
+// a conservative value once, lazily, the same way as ensure_ftz_daz() above
+// (never as a static initializer -- see that function's comment).
+void ensure_sane_thread_count() {
+#ifdef _OPENMP
+  static const bool kDone = [] {
+    if (!std::getenv("OMP_NUM_THREADS") && omp_get_max_threads() > 1)
+      omp_set_num_threads(1);
+    return true;
+  }();
+  (void)kDone;
+#endif
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Parallel BLAS-1 / SpMV primitives
@@ -182,6 +245,8 @@ void ILU0::apply(const std::vector<double>& x, std::vector<double>& y) const {
 SolveResult cg(const CSR& A, const std::vector<double>& b,
                std::vector<double>& x, double rtol, int maxit,
                const Precond& psolve) {
+  ensure_ftz_daz();
+  ensure_sane_thread_count();
   SolveResult res;
   const int n = A.n;
   x.resize(n, 0.0);
@@ -225,6 +290,8 @@ SolveResult cg(const CSR& A, const std::vector<double>& b,
 SolveResult bicgstab(const CSR& A, const std::vector<double>& b,
                      std::vector<double>& x, double rtol, int maxit,
                      const Precond& psolve) {
+  ensure_ftz_daz();
+  ensure_sane_thread_count();
   SolveResult res;
   const int n = A.n;
   x.resize(n, 0.0);

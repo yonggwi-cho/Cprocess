@@ -153,6 +153,42 @@ double interstitial_recomb_rate(double temp_k) {
   return pre * std::exp(-e / (kBoltzmannEv * temp_k));
 }
 
+// Full point-defect model (P2-1). Vacancy defaults are chosen to be the same
+// order of magnitude as the interstitial ones but distinct: C_V* uses a
+// slightly lower activation energy (3.6 eV vs 3.7 eV) so vacancies are
+// modestly more abundant at typical anneal temperatures, while D_V uses a
+// higher prefactor-normalized but similar activation energy (1.8 eV vs
+// 1.77 eV) and a 50x smaller prefactor, i.e. vacancies migrate distinctly
+// slower than interstitials -- the physically-important ordering (I moves
+// faster than V; both reach the same order of equilibrium concentration at
+// high T) is what's calibrated here, not exact literature fits.
+PointDefectParams point_defect_params(double temp_k, const ParamDB& db) {
+  const double kt = kBoltzmannEv * temp_k;
+  PointDefectParams p;
+  const double ci_pre = db.get("pd.ci_star.pre", 3.0e27);
+  const double ci_e = db.get("pd.ci_star.e", 3.7);
+  p.ci_star = ci_pre * std::exp(-ci_e / kt);
+  const double cv_pre = db.get("pd.cv_star.pre", 1.0e27);
+  const double cv_e = db.get("pd.cv_star.e", 3.6);
+  p.cv_star = cv_pre * std::exp(-cv_e / kt);
+  const double di_pre = db.get("pd.di.pre", 5.0e-2);
+  const double di_e = db.get("pd.di.e", 1.77);
+  p.d_i = di_pre * std::exp(-di_e / kt);
+  const double dv_pre = db.get("pd.dv.pre", 1.0e-3);
+  const double dv_e = db.get("pd.dv.e", 1.8);
+  p.d_v = dv_pre * std::exp(-dv_e / kt);
+
+  const double a_si = 2.35e-8;  // cm, Si lattice capture radius
+  const double kbulk_factor = db.get("pd.kbulk.factor", 1.0);
+  p.k_bulk = kbulk_factor * 4.0 * M_PI * a_si * (p.d_i + p.d_v);
+  const double ktrap_factor = db.get("pd.c311.ktrap.factor", 1.0);
+  p.k_trap = ktrap_factor * 4.0 * M_PI * a_si * p.d_i;
+  const double nu0 = db.get("pd.c311.nu0", 1e13);
+  const double eb = db.get("pd.c311.eb", 3.6);
+  p.k_emit = nu0 * std::exp(-eb / kt);
+  return p;
+}
+
 double segregation_m(const Dopant& d, double temp_k) {
   const auto& P = ParamDB::instance();
   const double m0 = P.get(d.symbol + ".seg_m0", d.seg_m0);

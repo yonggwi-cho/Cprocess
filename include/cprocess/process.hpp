@@ -153,6 +153,14 @@ std::vector<std::pair<double, double>> profile1d(const SimState& st,
 std::vector<double> active_field(const SimState& st, const std::string& species,
                                  double temp_k = -1.0, std::ostream* log = nullptr);
 
+// GDSII layout input (P2-7). Reads BOUNDARY polygons on `layer` (layer < 0
+// means all layers) from a minimal dependency-free GDSII stream reader
+// (cp::read_gds); returned polygons are in cm, ready to pass to
+// mask_polygon()/deposit(poly=)/etch(poly=). Throws on missing/malformed
+// files (see cp::read_gds).
+std::vector<std::vector<std::pair<double, double>>> load_gds(
+    const std::string& path, int layer, std::ostream* log = nullptr);
+
 // ── Runtime parameter overrides (P1-10, cp::ParamDB) ──
 // Override any physical parameter consumed by cp::materials.cpp / the TED
 // loop / seed_interstitials at call time (raw core units). No key validation
