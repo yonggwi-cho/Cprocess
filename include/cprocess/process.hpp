@@ -119,6 +119,13 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts,
 // time_s in seconds, temp_k in K. Grows/extends the SiO2 layer above the
 // silicon per Deal-Grove; consumes 0.44*dx_ox of Si and raises the outer
 // surface by 0.56*dx_ox. Returns the new total oxide thickness in cm.
+// P2-3 (OED): when ParamDB "oed.theta" > 0 (default 0.01), the call
+// internally sub-steps into N=10 (grow -> inject excess "I" at the growing
+// interface -> relax via diffuse_ted) increments, so a single oxidize()
+// call already exhibits oxidation-enhanced diffusion for any dopant field
+// present. "oed.theta" == 0 disables this and reproduces the original
+// (P1-6) geometry-only behavior exactly (no diffusion at all inside
+// oxidize()).
 double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
                std::ostream* log = nullptr);
 

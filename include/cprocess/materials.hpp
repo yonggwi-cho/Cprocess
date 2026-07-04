@@ -54,6 +54,14 @@ constexpr double kFrenkelSurvival = 0.01;
 // physics differs, but capping keeps the free supersaturation bounded.
 constexpr double kAmorphizationDensity = 6.25e21;
 
+// Silicon atomic density [cm^-3] (diamond-cubic lattice, a0=5.431 A -> 8
+// atoms per 1.6e-22 cm^3 cell ~= 5.0e22 cm^-3). Used by the OED interstitial
+// injection source (P2-3): the growing Si/SiO2 interface consumes Si atoms
+// at rate d(dx)/dt, and a fraction `oed.theta` of that atomic flux is
+// assumed to inject as excess self-interstitials into the Si just below the
+// interface (see proc::oxidize in src/process.cpp).
+constexpr double kNSi = 5.0e22;
+
 // neutral (P2-8): species that carries no net charge in Si (e.g. C, F, Ge).
 // Excluded from the charge-neutrality nnet sum and from field-enhancement
 // (see src/diffusion.cpp's nni loops in run()/run_ted()).

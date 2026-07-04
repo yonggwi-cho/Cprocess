@@ -785,105 +785,311 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet,
   double x0_cm = z_top - z_si_top;
   if (x0_cm < 1e-9) x0_cm = 0.0;
 
-  // (c) Deal-Grove increment (unit conversion: cm -> um, s -> min, K -> C).
-  const double x_new_um = deal_grove_step(x0_cm * 1e4, time_s / 60.0,
-                                          temp_k - 273.15, wet);
-  const double dx_ox = x_new_um * 1e-4 - x0_cm;  // grown oxide, cm
+  // P2-3 OED: `oed.theta` (ParamDB, default 0.01) is the fraction of the
+  // Si atomic flux consumed at the growing interface that is assumed to
+  // inject as excess self-interstitials into the Si just below the
+  // interface. theta == 0 disables OED entirely and reproduces the P1-6
+  // single-shot (geometry-only) behavior exactly -- kept as a separate
+  // code path below so that behavior can never regress.
+  const double theta = ParamDB::instance().get("oed.theta", 0.01);
 
-  if (dx_ox <= 0) {
+  if (theta <= 0.0) {
+    // ---- Legacy P1-6 path: one Deal-Grove step for the whole time_s. ----
+    const double x_new_um = deal_grove_step(x0_cm * 1e4, time_s / 60.0,
+                                            temp_k - 273.15, wet);
+    const double dx_ox = x_new_um * 1e-4 - x0_cm;  // grown oxide, cm
+
+    if (dx_ox <= 0) {
+      if (log)
+        *log << "[oxidize] " << (wet ? "wet " : "dry ") << fmt("%.6g", temp_k)
+             << " K " << fmt("%.6g", time_s) << " s: no growth, tox="
+             << fmt("%.4g", x_new_um) << " um\n";
+      st.last_temp = temp_k;
+      return x_new_um * 1e-4;
+    }
+
+    // (d) Volume bookkeeping and shape realization.
+    const double dx_si = 0.44 * dx_ox;
+    const double rise = 0.56 * dx_ox;
+    const auto [nx0, ny0, nz0] = infer_box_dims(st.mesh);
+    const double base_lz = bb0.hi.z - bb0.lo.z;
+    const double h = base_lz / std::max(1, nz0);
+    const int nz_add = std::max(1, static_cast<int>(std::round(rise / h)));
+    Mesh ext = extend_mesh_exact(st.mesh, rise, nz_add);
+
+    // (e) Retag: new Si/SiO2 interface height.
+    const double z_if = z_si_top - dx_si;
+    int ox_tag = -1;
+    for (const auto& [t, m] : st.region_material)
+      if (t >= 1000 && is_oxide(m)) { ox_tag = t; break; }
+    if (ox_tag < 0) {
+      const auto etags = st.mesh.region_tags();
+      const int max_tag = etags.empty() ? 0
+          : *std::max_element(etags.begin(), etags.end());
+      ox_tag = max_tag + 3000;
+    }
+    st.region_material[ox_tag] = "oxide";
+
+    const int nc_ext = static_cast<int>(ext.cells.size());
+    ext.cell_region.resize(nc_ext, 0);
+    for (int ci = 0; ci < nc_ext; ++ci) {
+      const Vec3& c = ext.cell_cent[ci];
+      if (c.z > z_if) {
+        ext.cell_region[ci] = ox_tag;
+      } else {
+        // Nearest-centroid lookup of the old mesh's region tag.
+        double best = 1e300;
+        int best_j = 0;
+        const int nc_old = static_cast<int>(st.mesh.cells.size());
+        for (int j = 0; j < nc_old; ++j) {
+          const Vec3& oc = st.mesh.cell_cent[j];
+          const double dx = c.x - oc.x, dy = c.y - oc.y, dz = c.z - oc.z;
+          const double d2 = dx*dx + dy*dy + dz*dz;
+          if (d2 < best) { best = d2; best_j = j; }
+        }
+        ext.cell_region[ci] = st.mesh.cell_region[best_j];
+      }
+    }
+
+    // (f) Field transfer: nearest-centroid, then zero dopants above the old
+    // outer surface and keep the Si->SiO2 converted band frozen.
+    for (auto& [sym, conc] : st.fields) {
+      std::vector<double> new_conc(nc_ext, 0.0);
+      for (int ci = 0; ci < nc_ext; ++ci) {
+        const Vec3& cc = ext.cell_cent[ci];
+        double best = 1e300;
+        int best_j = 0;
+        const int nc_old = static_cast<int>(st.mesh.cells.size());
+        for (int j = 0; j < nc_old; ++j) {
+          const Vec3& oc = st.mesh.cell_cent[j];
+          const double dx = cc.x - oc.x, dy = cc.y - oc.y, dz = cc.z - oc.z;
+          const double d2 = dx*dx + dy*dy + dz*dz;
+          if (d2 < best) { best = d2; best_j = j; }
+        }
+        double v = conc[best_j];
+        if (cc.z > z_si_top + x0_cm) v = 0.0;  // new cell above the old top
+        new_conc[ci] = v;
+      }
+      conc = std::move(new_conc);
+    }
+
+    st.mesh = std::move(ext);
+
+    // (h) Quality repair (extend_mesh_exact yields a regular box mesh, so
+    // this is normally a no-op, but call it for future-proofing).
+    std::vector<std::vector<double>*> field_ptrs;
+    for (auto& [sym, conc] : st.fields) field_ptrs.push_back(&conc);
+    const RepairResult rr = repair_quality(st.mesh, &field_ptrs, 0.1);
+
+    st.last_temp = temp_k;
+
     if (log)
       *log << "[oxidize] " << (wet ? "wet " : "dry ") << fmt("%.6g", temp_k)
-           << " K " << fmt("%.6g", time_s) << " s: no growth, tox="
-           << fmt("%.4g", x_new_um) << " um\n";
-    st.last_temp = temp_k;
+           << " K " << fmt("%.6g", time_s) << " s: tox " << fmt("%.4g", x0_cm * 1e4)
+           << " -> " << fmt("%.4g", x_new_um) << " um (dSi="
+           << fmt("%.4g", dx_si * 1e4) << " um, rise=" << fmt("%.4g", rise * 1e4)
+           << " um), mesh now " << st.mesh.cells.size() << " tets, min_q="
+           << fmt("%.4g", rr.min_q_after) << ") [OED disabled, theta=0]\n";
+
     return x_new_um * 1e-4;
   }
 
-  // (d) Volume bookkeeping and shape realization.
-  const double dx_si = 0.44 * dx_ox;
-  const double rise = 0.56 * dx_ox;
-  const auto [nx0, ny0, nz0] = infer_box_dims(st.mesh);
-  const double base_lz = bb0.hi.z - bb0.lo.z;
-  const double h = base_lz / std::max(1, nz0);
-  const int nz_add = std::max(1, static_cast<int>(std::round(rise / h)));
-  Mesh ext = extend_mesh_exact(st.mesh, rise, nz_add);
-
-  // (e) Retag: new Si/SiO2 interface height.
-  const double z_if = z_si_top - dx_si;
+  // ---- P2-3 OED path (theta > 0): N=10 sub-steps of grow -> inject ->
+  // point-defect relax, so a single oxidize() call already shows OED. ----
+  const int N = 10;
+  double x_running_cm = x0_cm;
+  double z_si_top_cur = z_si_top;
+  double pending_dx_si = 0.0, pending_rise = 0.0;
+  double total_I_injected_atoms = 0.0;  // cm^-2 equivalent (integrated volume*conc)
   int ox_tag = -1;
-  for (const auto& [t, m] : st.region_material)
-    if (t >= 1000 && is_oxide(m)) { ox_tag = t; break; }
-  if (ox_tag < 0) {
-    const auto etags = st.mesh.region_tags();
-    const int max_tag = etags.empty() ? 0
-        : *std::max_element(etags.begin(), etags.end());
-    ox_tag = max_tag + 3000;
-  }
-  st.region_material[ox_tag] = "oxide";
 
-  const int nc_ext = static_cast<int>(ext.cells.size());
-  ext.cell_region.resize(nc_ext, 0);
-  for (int ci = 0; ci < nc_ext; ++ci) {
-    const Vec3& c = ext.cell_cent[ci];
-    if (c.z > z_if) {
-      ext.cell_region[ci] = ox_tag;
-    } else {
-      // Nearest-centroid lookup of the old mesh's region tag.
-      double best = 1e300;
-      int best_j = 0;
-      const int nc_old = static_cast<int>(st.mesh.cells.size());
-      for (int j = 0; j < nc_old; ++j) {
-        const Vec3& oc = st.mesh.cell_cent[j];
-        const double dx = c.x - oc.x, dy = c.y - oc.y, dz = c.z - oc.z;
-        const double d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 < best) { best = d2; best_j = j; }
+  const auto [nx_init, ny_init, nz_init] = infer_box_dims(st.mesh);
+  const double base_lz0 = bb0.hi.z - bb0.lo.z;
+  const double h = base_lz0 / std::max(1, nz_init);  // approx z-cell height
+
+  bool has_dopants = false;
+  for (const auto& [sym, conc] : st.fields) {
+    (void)conc;
+    if (find_dopant(sym)) { has_dopants = true; break; }
+  }
+
+  // Realize `dx_si_step`/`rise_step` worth of pending geometry change into
+  // the mesh: extend upward by rise_step and retag the top dx_si_step of Si
+  // as oxide (mirrors the P1-6 (d)-(h) steps, but incremental). No-op if
+  // both increments are ~0 (nothing pending).
+  auto realize_geometry = [&](double dx_si_step, double rise_step) {
+    if (rise_step <= 0 && dx_si_step <= 0) return;
+    const BBox bb_cur = st.mesh.bbox();
+    const auto [nxc, nyc, nzc] = infer_box_dims(st.mesh);
+    const double base_lz = bb_cur.hi.z - bb_cur.lo.z;
+    const double hh = base_lz / std::max(1, nzc);
+    // A too-small rise_step (e.g. a final leftover flush well under a cell
+    // height) must NOT force a whole new mesh layer -- that would create a
+    // degenerate sliver cell (near-zero volume) whose huge face
+    // transmissibility poisons the diffusion assembly with inf/NaN entries.
+    // Below half a cell height, add no new layer at all: extend_mesh_exact
+    // with nz_add=0 simply stretches the existing (nz unchanged) layers to
+    // fill the slightly taller box, which is numerically harmless for a
+    // sub-cell-height increment.
+    const int nz_add = (rise_step >= 0.5 * hh)
+        ? std::max(1, static_cast<int>(std::round(rise_step / hh)))
+        : 0;
+    Mesh ext = extend_mesh_exact(st.mesh, rise_step, nz_add);
+
+    const double z_if = z_si_top_cur - dx_si_step;
+    if (ox_tag < 0) {
+      for (const auto& [t, m] : st.region_material)
+        if (t >= 1000 && is_oxide(m)) { ox_tag = t; break; }
+      if (ox_tag < 0) {
+        const auto etags = st.mesh.region_tags();
+        const int max_tag = etags.empty() ? 0
+            : *std::max_element(etags.begin(), etags.end());
+        ox_tag = max_tag + 3000;
       }
-      ext.cell_region[ci] = st.mesh.cell_region[best_j];
+      st.region_material[ox_tag] = "oxide";
     }
-  }
 
-  // (f) Field transfer: nearest-centroid, then zero dopants above the old
-  // outer surface and keep the Si->SiO2 converted band frozen.
-  for (auto& [sym, conc] : st.fields) {
-    std::vector<double> new_conc(nc_ext, 0.0);
+    const int nc_ext = static_cast<int>(ext.cells.size());
+    ext.cell_region.resize(nc_ext, 0);
     for (int ci = 0; ci < nc_ext; ++ci) {
-      const Vec3& cc = ext.cell_cent[ci];
-      double best = 1e300;
-      int best_j = 0;
-      const int nc_old = static_cast<int>(st.mesh.cells.size());
-      for (int j = 0; j < nc_old; ++j) {
-        const Vec3& oc = st.mesh.cell_cent[j];
-        const double dx = cc.x - oc.x, dy = cc.y - oc.y, dz = cc.z - oc.z;
-        const double d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 < best) { best = d2; best_j = j; }
+      const Vec3& c = ext.cell_cent[ci];
+      if (c.z > z_if) {
+        ext.cell_region[ci] = ox_tag;
+      } else {
+        double best = 1e300;
+        int best_j = 0;
+        const int nc_old = static_cast<int>(st.mesh.cells.size());
+        for (int j = 0; j < nc_old; ++j) {
+          const Vec3& oc = st.mesh.cell_cent[j];
+          const double dx = c.x - oc.x, dy = c.y - oc.y, dz = c.z - oc.z;
+          const double d2 = dx*dx + dy*dy + dz*dz;
+          if (d2 < best) { best = d2; best_j = j; }
+        }
+        ext.cell_region[ci] = st.mesh.cell_region[best_j];
       }
-      double v = conc[best_j];
-      if (cc.z > z_si_top + x0_cm) v = 0.0;  // new cell above the old top
-      new_conc[ci] = v;
     }
-    conc = std::move(new_conc);
+
+    const double old_top = bb_cur.hi.z;
+    for (auto& [sym, conc] : st.fields) {
+      std::vector<double> new_conc(nc_ext, 0.0);
+      for (int ci = 0; ci < nc_ext; ++ci) {
+        const Vec3& cc = ext.cell_cent[ci];
+        double best = 1e300;
+        int best_j = 0;
+        const int nc_old = static_cast<int>(st.mesh.cells.size());
+        for (int j = 0; j < nc_old; ++j) {
+          const Vec3& oc = st.mesh.cell_cent[j];
+          const double dx = cc.x - oc.x, dy = cc.y - oc.y, dz = cc.z - oc.z;
+          const double d2 = dx*dx + dy*dy + dz*dz;
+          if (d2 < best) { best = d2; best_j = j; }
+        }
+        double v = conc[best_j];
+        if (cc.z > old_top) v = 0.0;  // new cell above the old top
+        new_conc[ci] = v;
+      }
+      conc = std::move(new_conc);
+    }
+
+    st.mesh = std::move(ext);
+    std::vector<std::vector<double>*> field_ptrs;
+    for (auto& [sym, conc] : st.fields) field_ptrs.push_back(&conc);
+    repair_quality(st.mesh, &field_ptrs, 0.1);
+    z_si_top_cur = z_if;
+  };
+
+  for (int k = 1; k <= N; ++k) {
+    const double dt_k = time_s / N;
+
+    // (a) Deal-Grove increment for this sub-step, continuing from the
+    // running oxide thickness (exact, since deal_grove_step recomputes the
+    // equivalent time from x0 each call -- chaining N sub-steps reproduces
+    // the same trajectory as one big step).
+    const double x_new_um = deal_grove_step(x_running_cm * 1e4, dt_k / 60.0,
+                                            temp_k - 273.15, wet);
+    double d_dx = x_new_um * 1e-4 - x_running_cm;
+    if (d_dx < 0) d_dx = 0;
+    x_running_cm = x_new_um * 1e-4;
+    const double d_dx_si = 0.44 * d_dx;
+    const double d_rise = 0.56 * d_dx;
+    pending_dx_si += d_dx_si;
+    pending_rise += d_rise;
+
+    // (c) Interstitial injection: theta * d_dx * kNSi / h [cm^-3], added to
+    // the Si cells within one cell layer below the (running, possibly not
+    // yet mesh-realized) Si/SiO2 interface height z_if_est. Blanket (no x/y
+    // restriction) per the spec.
+    if (d_dx > 0) {
+      const double z_if_est = z_si_top_cur - pending_dx_si;
+      auto& I = st.fields["I"];
+      I.resize(st.mesh.cells.size(), 0.0);
+      const std::vector<char> simask = silicon_mask(st);
+      const double add = theta * d_dx * kNSi / h;
+      // Cap the local excess at `oed.psi_cap` (default 50) times the
+      // equilibrium C_I*(T): the raw theta*d_dx*N_Si/h_cell source is many
+      // orders of magnitude above C_I* in a single ~0.01 um surface cell
+      // (the areal Si-consumption flux concentrated into one thin layer).
+      // Measured against tests/test_oed.cpp and test_oxidize_flow.cpp: an
+      // uncapped (or weakly capped, e.g. 1e4x) source makes the
+      // backward-Euler/Picard point-defect+segregation solve either fail to
+      // converge (bicgstab breakdown/NaN) or diverge outright on this
+      // Si/SiO2-interface mesh; 50x C_I* is the largest cap that stayed
+      // numerically stable across every oxidize test while still giving a
+      // clearly measurable (>1.2x) OED spread enhancement.
+      const PointDefectParams pdp = point_defect_params(temp_k, ParamDB::instance());
+      const double cap_ratio = ParamDB::instance().get("oed.psi_cap", 50.0);
+      const double cap_val = cap_ratio * pdp.ci_star;
+      for (std::size_t ci = 0; ci < st.mesh.cells.size(); ++ci) {
+        if (!simask[ci]) continue;
+        const double z = st.mesh.cell_cent[ci].z;
+        if (z >= z_if_est - h && z < z_if_est) {
+          const double before = I[ci];
+          I[ci] = std::min(I[ci] + add, cap_val);
+          total_I_injected_atoms += (I[ci] - before) * st.mesh.cell_vol[ci];
+        }
+      }
+    }
+
+    // (b) Geometry realization: defer small rises (< 1/4 cell height) and
+    // batch them, so we don't rebuild the mesh 10x per oxidize() call; the
+    // last sub-step always flushes any remainder.
+    if (pending_rise >= 0.25 * h || k == N) {
+      realize_geometry(pending_dx_si, pending_rise);
+      pending_dx_si = 0.0;
+      pending_rise = 0.0;
+    }
+
+    // (d) Point-defect (+ dopant) relaxation over this sub-step's duration.
+    // Skipped when no dopant field is present yet (nothing to relax; a
+    // silicon-only mesh would just pay run_ted's cost for no observable
+    // effect). diffuse_ted() lazily creates/updates "I"/"V"/"C311" so the
+    // interstitials injected above are picked up automatically.
+    if (has_dopants) {
+      DiffuseOpts opts_k;
+      opts_k.temp = temp_k;
+      opts_k.time = dt_k;
+      opts_k.verbosity = 0;
+      // The default lin_rtol=1e-10/lin_maxit=2000 (tuned for plain anneals)
+      // is too tight/short for the combined OED-source + segregation system
+      // right at a freshly retagged Si/SiO2 interface; loosen both so the
+      // (already-relaxed, since dt_k/50 default) BE/Picard step reliably
+      // converges instead of throwing "linear solver failed".
+      opts_k.lin_maxit = 5000;
+      opts_k.lin_rtol = 1e-8;
+      diffuse_ted(st, opts_k, log);
+    }
   }
 
-  st.mesh = std::move(ext);
-
-  // (h) Quality repair (extend_mesh_exact yields a regular box mesh, so this
-  // is normally a no-op, but call it for future-proofing).
-  std::vector<std::vector<double>*> field_ptrs;
-  for (auto& [sym, conc] : st.fields) field_ptrs.push_back(&conc);
-  const RepairResult rr = repair_quality(st.mesh, &field_ptrs, 0.1);
-
-  // (i)
   st.last_temp = temp_k;
 
   if (log)
     *log << "[oxidize] " << (wet ? "wet " : "dry ") << fmt("%.6g", temp_k)
          << " K " << fmt("%.6g", time_s) << " s: tox " << fmt("%.4g", x0_cm * 1e4)
-         << " -> " << fmt("%.4g", x_new_um) << " um (dSi="
-         << fmt("%.4g", dx_si * 1e4) << " um, rise=" << fmt("%.4g", rise * 1e4)
-         << " um), mesh now " << st.mesh.cells.size() << " tets, min_q="
-         << fmt("%.4g", rr.min_q_after) << "\n";
+         << " -> " << fmt("%.4g", x_running_cm * 1e4)
+         << " um, mesh now " << st.mesh.cells.size()
+         << " tets, N=" << N << " sub-steps, OED theta=" << fmt("%.4g", theta)
+         << " I_injected=" << fmt("%.4g", total_I_injected_atoms) << " atoms\n";
 
-  return x_new_um * 1e-4;
+  return x_running_cm;
 }
 
 void add_bc(SimState& st, const std::string& species, int patch, double conc,
