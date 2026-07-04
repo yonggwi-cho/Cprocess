@@ -154,6 +154,31 @@ struct PointDefectParams {
 };
 PointDefectParams point_defect_params(double temp_k, const ParamDB& db);
 
+// ── Dopant clustering (P2-2): immobile, electrically-inactive cluster field ──
+// Single effective-composition cluster field per clustering-capable dopant:
+//   B  -> BIC ("B3I", m=3 B atoms per n=1 captured interstitial, approximated
+//         as a single field of clustered B atoms; forward order p=2 in
+//         C_B_act, "boron pairs nucleate the cluster")
+//   As -> As4V; the true 4th-order (As4) nucleation kinetics is far stiffer
+//         than the reaction sub-cycle step can resolve, so it is approximated
+//         as effective 2nd order in C_As_act (documented simplification, see
+//         docs/tasks/P2-2_dopant_clusters.md)
+// Other dopants (P, Sb) are not modeled: kf == 0 means "no clustering".
+//   cl.b.kf / cl.b.nu0 / cl.b.eb   -- B forward rate [1/s] / reverse Arrhenius
+//   cl.as.kf / cl.as.nu0 / cl.as.eb -- As forward rate [1/s] / reverse Arrhenius
+struct ClusterParams {
+  double kf = 0;        // 1/s; forward-rate prefactor (0 => not modeled)
+  double kr = 0;         // 1/s; Arrhenius reverse (dissolution) rate at temp_k
+  double pd_frac = 0;    // point-defect atoms exchanged per clustered dopant atom
+  bool uses_v = false;   // true: forward driven by C_V/C_V* (As); false: C_I/C_I* (B)
+};
+ClusterParams cluster_params(const std::string& symbol, double temp_k,
+                             const ParamDB& db);
+
+// Reference concentration [cm^-3] normalizing the C_act^2 forward-rate term
+// to a 1/s scale (dimensional bookkeeping constant, fixed per spec).
+constexpr double kClusterCref = 1.0e20;
+
 // Interpolates the range table (linear in log E). Returns false if the
 // dopant has no table; clamps outside the tabulated energy range.
 bool implant_range(const Dopant& d, double energy_kev, double& rp, double& drp);

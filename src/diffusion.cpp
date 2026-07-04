@@ -18,6 +18,9 @@ namespace cp {
 
 namespace {
 const double kNaN = std::numeric_limits<double>::quiet_NaN();
+// Cap on the point-defect supersaturation ratio (C_I/C_I* or C_V/C_V*) fed
+// into the P2-2 cluster forward-rate term; see run_ted for rationale.
+constexpr double kClusterRatioCap = 1.0e6;
 }
 
 double temp_at(const DiffuseOpts& o, double t) {
@@ -839,6 +842,64 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
         CV[i] = CV_iter;
       }
     }
+    // ── 1c. Dopant clustering (P2-2): BIC for B, As4V for As. ──
+    // Own linearized-implicit sub-cycle (same kSubsteps/dts as above): the
+    // reverse (dissolution) term is treated implicitly (unconditionally
+    // stable regardless of dts); the forward term is bounded (C_act is
+    // solid-solubility-clamped, so kf*C_act^2 cannot blow up) and is
+    // evaluated explicitly at the current substep's CI/CV. Point-defect
+    // feedback (B3I consumes 1/3 I per clustered B atom, As4V consumes 1/4 V
+    // per clustered As atom) is folded into CI/CV immediately so later
+    // substeps see the updated point-defect concentrations.
+    for (auto& sf : fields) {
+      if (!sf.cluster) continue;
+      const ClusterParams clp = cluster_params(sf.dopant->symbol, T, db);
+      if (clp.kf <= 0) continue;
+      const double css = solid_solubility(*sf.dopant, T);
+      std::vector<double>& mobile = *sf.conc;
+      std::vector<double>& clus = *sf.cluster;
+      clus.resize(nc, 0.0);
+      for (int sub = 0; sub < kSubsteps; ++sub) {
+        for (int i = 0; i < nc; ++i) {
+          if (mat_[i] != kMatSi) continue;
+          const double mob = std::max(mobile[i], 0.0);
+          const double c_act = (css > 0) ? std::min(mob, css) : mob;
+          // High-concentration gate (spec test 3: no spurious low-dose
+          // clustering). Reverse (dissolution) still runs unconditionally.
+          const bool gate = !(css > 0) || c_act > 0.1 * css;
+          // The point-defect supersaturation ratio can be astronomically
+          // large just after a damage seed (C_I*/C_V* are tiny equilibrium
+          // densities, so even a modest absolute excess gives Smax ~1e6-1e11,
+          // see run_ted's own per-step log) -- cap it the same way the
+          // TED-diffusivity enhancement scale is capped just below, so the
+          // forward rate saturates rather than diverging.
+          double ratio = clp.uses_v ? CV[i] / pdp.cv_star : CI[i] / pdp.ci_star;
+          ratio = std::min(ratio, kClusterRatioCap);
+          const double rf = gate ? clp.kf * c_act * c_act / kClusterCref * ratio : 0.0;
+          // Mass-conserving, unconditionally-stable operator split: forward
+          // (production) is explicit but capped at the mobile mass actually
+          // available this substep (the point defect supersaturation ratio
+          // can be enormous just after a damage seed, so an uncapped
+          // explicit forward term can massively overshoot -- there is only
+          // so much dopant to cluster); reverse (dissolution) is then solved
+          // implicitly on the result, which is unconditionally stable for
+          // any kr*dts. Net update conserves mobile+cluster exactly.
+          const double cl_old = clus[i];
+          const double forward = std::min(dts * rf, mob);
+          const double cl_mid = cl_old + forward;
+          const double mob_mid = mob - forward;
+          const double cl_new = cl_mid / (1.0 + dts * clp.kr);
+          const double released = cl_mid - cl_new;
+          const double mob_new = mob_mid + released;
+          const double dcl = cl_new - cl_old;  // net cluster mass change (can be <0)
+          clus[i] = cl_new;
+          mobile[i] = mob_new;
+          if (clp.uses_v) CV[i] = std::max(CV[i] - clp.pd_frac * dcl, 0.0);
+          else CI[i] = std::max(CI[i] - clp.pd_frac * dcl, 0.0);
+        }
+      }
+    }
+
     for (int i = 0; i < nc; ++i) {
       CI[i] = std::max(CI[i], 0.0);
       CV[i] = std::max(CV[i], 0.0);
@@ -979,6 +1040,17 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
                     fields[s].dopant->symbol.c_str(), peak,
                     mass0[s] > 0 ? (mass - mass0[s]) / mass0[s] * 100.0 : 0.0);
       *log_ << buf;
+      if (fields[s].cluster) {
+        double clmass = 0;
+        for (int i = 0; i < nc; ++i)
+          clmass += (*fields[s].cluster)[i] * mesh_.cell_vol[i];
+        const double total = mass + clmass;
+        char cbuf[128];
+        std::snprintf(cbuf, sizeof(cbuf), "[ted]   %s_cl_frac=%.4g\n",
+                      fields[s].dopant->symbol.c_str(),
+                      total > 0 ? clmass / total : 0.0);
+        *log_ << cbuf;
+      }
     }
   }
 }

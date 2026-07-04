@@ -346,6 +346,25 @@ def test_ted_interstitial_field():
     check("I" not in sim2.field_names(), "no interstitials without damage=True")
 
 
+def test_dopant_clusters_python():
+    """P2-2: high-dose B + damage=True TED anneal populates 'B_cl' (BIC) and
+    conserves total (mobile + cluster) dose."""
+    print("test_dopant_clusters_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+    sim.region("silicon")
+    sim.implant("B", dose=1e15, rp=0.05, drp=0.02, damage=True)
+    dose_in = sim.dose("B")
+    sim.diffuse(time=10.0 / 60.0, temp=700, ted=True, nonortho=False)
+    check("B_cl" in sim.field_names(), "'B_cl' cluster field present after TED anneal")
+    check(sim.field("B_cl").sum() > 0, "some B has clustered (BIC)")
+    dose_out = sim.dose("B") + sim.dose("B_cl")
+    rel = abs(dose_out - dose_in) / dose_in
+    print(f"  dose in={dose_in:.4e} cm^-2, (B+B_cl) out={dose_out:.4e} cm^-2, "
+          f"rel diff={rel * 100:.4g}%")
+    check(rel < 1e-2, "total B (mobile + cluster) dose conserved to < 1%")
+
+
 def test_mc_damage_seed():
     """MC implant with channeling + damage seeds 'I' from KP damage (P1-2)."""
     print("test_mc_damage_seed")
@@ -960,6 +979,7 @@ if __name__ == "__main__":
     test_oxidize_wet_faster()
     test_ted_enhancement()
     test_ted_interstitial_field()
+    test_dopant_clusters_python()
     test_mc_damage_seed()
     test_error_paths()
     test_ted_flow_python()

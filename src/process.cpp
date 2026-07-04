@@ -941,10 +941,24 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
 
 void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   need_mesh(st);
+  // P2-2: lazily create "B_cl"/"As_cl" immobile cluster fields for any
+  // clustering-capable dopant already present, before building `fields`
+  // (so the loop below can bind SpeciesField::cluster without inserting into
+  // st.fields mid-iteration).
+  std::vector<std::string> cluster_syms;
+  for (const auto& [sym, conc] : st.fields) {
+    if ((sym == "B" || sym == "As") && find_dopant(sym)) cluster_syms.push_back(sym);
+  }
+  for (const auto& sym : cluster_syms)
+    st.fields[sym + "_cl"].resize(st.mesh.cells.size(), 0.0);
+
   std::vector<SpeciesField> fields;
   for (auto& [sym, conc] : st.fields) {
     const Dopant* d = find_dopant(sym);
-    if (d) fields.push_back({d, &conc});
+    if (!d) continue;
+    SpeciesField sf{d, &conc};
+    if (sym == "B" || sym == "As") sf.cluster = &st.fields[sym + "_cl"];
+    fields.push_back(sf);
   }
   if (fields.empty()) {
     if (log) *log << "[ted] no dopants present\n";

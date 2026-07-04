@@ -43,6 +43,13 @@ double temp_at(const DiffuseOpts& opts, double t);
 struct SpeciesField {
   const Dopant* dopant = nullptr;
   std::vector<double>* conc = nullptr;  // per-cell concentration, cm^-3
+  // Optional immobile cluster field (P2-2, e.g. "B_cl"/"As_cl"): cm^-3 of
+  // dopant atoms locked into an electrically-inactive cluster. nullptr means
+  // this species has no clustering model (run_ted() skips it). `conc` above
+  // then holds the *mobile* (diffusing) concentration only; conc + *cluster
+  // is the conserved total dopant amount. Only meaningful to run_ted(); run()
+  // ignores it.
+  std::vector<double>* cluster = nullptr;
 };
 
 // Per-material-pair segregation coefficients (P1-9), indexed by
