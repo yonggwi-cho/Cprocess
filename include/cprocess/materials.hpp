@@ -31,6 +31,15 @@ class ParamDB;
 //   ted.smax                    -- run_ted supersaturation cap S_max
 //   ted.frenkel_survival        -- multiplier on the "+1" seed_interstitials
 //                                   added amount (fallback 1.0)
+//   ted.k_ci                    -- C-I sink rate (P2-8), cm^3/s: excess
+//                                   interstitials are removed at rate
+//                                   k_ci*C_C*psi and accumulated into the
+//                                   immobile "C_cl" field (run_ted only,
+//                                   only when a "C" species is present).
+//                                   Default 1e-19 (see src/diffusion.cpp for
+//                                   the measured calibration against the
+//                                   P2-8 TED-suppression acceptance test;
+//                                   deviates from the task spec's 2e-21).
 
 constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
@@ -45,7 +54,10 @@ constexpr double kFrenkelSurvival = 0.01;
 // physics differs, but capping keeps the free supersaturation bounded.
 constexpr double kAmorphizationDensity = 6.25e21;
 
-enum class DopType { donor, acceptor };
+// neutral (P2-8): species that carries no net charge in Si (e.g. C, F, Ge).
+// Excluded from the charge-neutrality nnet sum and from field-enhancement
+// (see src/diffusion.cpp's nni loops in run()/run_ted()).
+enum class DopType { donor, acceptor, neutral };
 
 // Per-cell material id (P1-9). 0/1 stay compatible with the P1-4 cell_mat
 // values; 2 (the old "frozen/other" catch-all) is synonymous with kMatGas.

@@ -63,6 +63,66 @@ const std::vector<Dopant> kDopants = {
      /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
      /*dox0,eox*/ 2.6e-2, 4.00,
      /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 5.3, 3.65},
+    // ── P2-8: In (slow acceptor), C/F/Ge (neutral) ──
+    // In: Fair-style acceptor, vacancy-dominated (fi=0.2). Range table: Sb's
+    // table (chemically/mass-similar heavy group-III/V ion) scaled x1.05 on
+    // Rp/dRp per spec; gamma/beta carried over unchanged (no better data).
+    {"indium", "In", DopType::acceptor, 49, 114.82,
+     /*d0,e0*/ 0.785, 3.63, /*dm*/ 0, 0, /*dmm*/ 0, 0, /*dp,ep*/ 0.415, 3.63,
+     /*ss*/ 6.9e20, 0.78, /*fi*/ 0.2,
+     {{10, 9.45 * NM, 3.15 * NM, -0.20, 3.1}, {30, 22.05 * NM, 7.35 * NM, -0.30, 3.3},
+      {50, 32.55 * NM, 10.5 * NM, -0.35, 3.4}, {100, 55.65 * NM, 17.85 * NM, -0.50, 3.7},
+      {200, 100.8 * NM, 30.45 * NM, -0.60, 4.0}},
+     /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
+     /*dox0,eox*/ 2.0e-2, 4.00,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 7.0, 3.63},
+    // C: neutral, substitutional; suppresses TED via a dedicated C-I sink
+    // (run_ted(), see docs/tasks/P2-8_new_dopants.md), not the BIC-style
+    // clustering machinery (cluster_params() returns kf=0 for "C", i.e. "not
+    // modeled" there by design). Range table: B's table (light ion, similar
+    // channeling) scaled x0.8 depth per spec; gamma/beta unchanged.
+    {"carbon", "C", DopType::neutral, 6, 12.011,
+     /*d0,e0*/ 0.95, 3.04, /*dm*/ 0, 0, /*dmm*/ 0, 0, /*dp,ep*/ 0, 0,
+     /*ss*/ 4.0e24, 1.0, /*fi*/ 1.0,
+     {{10, 26.4 * NM, 13.6 * NM, -0.5, 3.5}, {20, 52.8 * NM, 22.4 * NM, -0.7, 4.0},
+      {30, 79.2 * NM, 29.6 * NM, -0.8, 4.5}, {50, 128.8 * NM, 40.0 * NM, -1.0, 5.0},
+      {80, 194.4 * NM, 50.4 * NM, -1.2, 6.0}, {100, 239.2 * NM, 56.8 * NM, -1.3, 6.5},
+      {150, 336.0 * NM, 68.0 * NM, -1.4, 7.5}, {200, 424.8 * NM, 75.2 * NM, -1.5, 8.0}},
+     /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
+     /*dox0,eox*/ 0.0, 0.0,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 9.5, 3.04},
+    // F: neutral, fast (constant-diffusivity approximation; real F transport
+    // is defect/trap dependent, out of scope per spec). Range table: B's
+    // table scaled x0.7 depth (between B and P per spec's guidance).
+    {"fluorine", "F", DopType::neutral, 9, 18.998,
+     /*d0,e0*/ 1.0e-2, 2.2, /*dm*/ 0, 0, /*dmm*/ 0, 0, /*dp,ep*/ 0, 0,
+     /*ss*/ 1.0e23, 0.8, /*fi*/ 0.5,
+     {{10, 23.1 * NM, 11.9 * NM, -0.5, 3.5}, {20, 46.2 * NM, 19.6 * NM, -0.7, 4.0},
+      {30, 69.3 * NM, 25.9 * NM, -0.8, 4.5}, {50, 112.7 * NM, 35.0 * NM, -1.0, 5.0},
+      {80, 170.1 * NM, 44.1 * NM, -1.2, 6.0}, {100, 209.3 * NM, 49.7 * NM, -1.3, 6.5},
+      {150, 294.0 * NM, 59.5 * NM, -1.4, 7.5}, {200, 371.7 * NM, 65.8 * NM, -1.5, 8.0}},
+     /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
+     /*dox0,eox*/ 0.0, 0.0,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 0.2, 2.2},
+    // Ge: neutral, immobile marker/strain species (SiGe entry point; lattice
+    // strain modeling is out of scope, P3). d0=0 everywhere -> D=0 in Si (and
+    // in every other material below): dopant_diffusivity()'s `if (d0>0)`
+    // guards already make this exactly 0, and the diffusion solver degrades
+    // gracefully for an all-zero-diffusivity species (assemble() reduces to
+    // a pure identity/mass-storage system, V/dt*c = V/dt*cold, so the field
+    // is solved to itself unchanged -- verified in test_new_dopants.cpp,
+    // no solver-side species-skip needed). ss_pre=0 => no solubility clamp.
+    // Range table: As's table, unchanged (spec: same mass/energy regime).
+    {"germanium", "Ge", DopType::neutral, 32, 72.63,
+     /*d0,e0*/ 0.0, 0.0, /*dm*/ 0, 0, /*dmm*/ 0, 0, /*dp,ep*/ 0, 0,
+     /*ss*/ 0.0, 0.0, /*fi*/ 0.0,
+     {{10, 9 * NM, 4 * NM, -0.20, 3.1}, {20, 16 * NM, 7 * NM, -0.25, 3.2},
+      {30, 23 * NM, 9 * NM, -0.30, 3.3}, {50, 34 * NM, 13 * NM, -0.35, 3.4},
+      {80, 48 * NM, 18 * NM, -0.45, 3.6}, {100, 58 * NM, 21 * NM, -0.50, 3.7},
+      {150, 85 * NM, 30 * NM, -0.60, 4.0}, {200, 110 * NM, 37 * NM, -0.70, 4.3}},
+     /*seg_m0,seg_e*/ 10.0, 0.0, /*seg_h0,seg_he*/ 1.0e5, 2.0,
+     /*dox0,eox*/ 0.0, 0.0,
+     /*dnit0,enit*/ 0.0, 0.0, /*dpoly0,epoly*/ 0.0, 0.0},
 };
 
 }  // namespace

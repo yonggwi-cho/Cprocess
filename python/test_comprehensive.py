@@ -365,6 +365,64 @@ def test_dopant_clusters_python():
     check(rel < 1e-2, "total B (mobile + cluster) dose conserved to < 1%")
 
 
+def test_new_dopants_python():
+    """P2-8: In/C/F/Ge implant+diffuse smoke test, plus a qualitative check
+    that C suppresses TED (B+C co-implant spreads less than B alone)."""
+    print("test_new_dopants_python")
+    for species in ("In", "C", "F", "Ge"):
+        sim = cp.Simulation()
+        sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+        sim.region("silicon")
+        sim.implant(species, dose=1e14, energy=50)
+        dose_in = sim.dose(species)
+        sim.diffuse(time=10.0, temp=1000)
+        dose_out = sim.dose(species)
+        rel = abs(dose_out - dose_in) / dose_in
+        check(np.isfinite(sim.field(species)).all(), f"{species}: field finite")
+        check(rel < 5e-3, f"{species}: dose conserved to < 0.5% ({rel*100:.4g}%)")
+
+    # Ge MC implant works (In is checked via test_mc_damage_seed-style paths
+    # elsewhere; both use the same generic species-name plumbing).
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=0.5, nx=4, ny=4, nz=50)
+    sim.region("silicon")
+    r = sim.implant("Ge", dose=1e14, energy=30, mc=True, ions=20000, threads=1, seed=1)
+    check(r.deposited > 0, "Ge MC implant: deposited > 0")
+
+    # C suppresses TED: B+C co-implant vs. B alone, both damage=True.
+    def spread_increment(species, with_c):
+        sim = cp.Simulation()
+        sim.mesh(x=0.3, y=0.3, z=1.0, nx=4, ny=4, nz=40)
+        sim.region("silicon")
+        sim.implant(species, dose=1e14, rp=0.05, drp=0.02, damage=True)
+        if with_c:
+            sim.init("C", 1e19)
+        vol = sim.cell_volumes
+        z = sim.cell_centroids[:, 2]
+
+        def spread():
+            c = sim.field(species)
+            w = c * vol
+            m = w.sum()
+            mean = (w * z).sum() / m
+            return float(np.sqrt(max(0.0, (w * z * z).sum() / m - mean * mean)))
+
+        s0 = spread()
+        sim.diffuse(time=1.0, temp=900, ted=True, nonortho=False)
+        s1 = spread()
+        return s1 - s0, sim
+
+    d_alone, _ = spread_increment("B", with_c=False)
+    d_with_c, sim_c = spread_increment("B", with_c=True)
+    # cell_centroids is already in micrometres (Simulation's engineering
+    # units), so d_alone/d_with_c above are already in um -- no unit factor.
+    print(f"  TED spread increment: B alone={d_alone:.4g} um, "
+          f"B+C={d_with_c:.4g} um")
+    check(d_with_c <= 0.8 * d_alone, "C reduces TED spread increment by >= 20%")
+    check("C_cl" in sim_c.field_names(), "'C_cl' sink field present")
+    check(sim_c.field("C_cl").sum() > 0, "some excess-I captured into C_cl")
+
+
 def test_mc_damage_seed():
     """MC implant with channeling + damage seeds 'I' from KP damage (P1-2)."""
     print("test_mc_damage_seed")
@@ -980,6 +1038,7 @@ if __name__ == "__main__":
     test_ted_enhancement()
     test_ted_interstitial_field()
     test_dopant_clusters_python()
+    test_new_dopants_python()
     test_mc_damage_seed()
     test_error_paths()
     test_ted_flow_python()

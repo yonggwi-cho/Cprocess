@@ -941,13 +941,16 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
 
 void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
   need_mesh(st);
-  // P2-2: lazily create "B_cl"/"As_cl" immobile cluster fields for any
-  // clustering-capable dopant already present, before building `fields`
-  // (so the loop below can bind SpeciesField::cluster without inserting into
-  // st.fields mid-iteration).
+  // P2-2/P2-8: lazily create "B_cl"/"As_cl"/"C_cl" immobile cluster fields
+  // for any clustering- (or, for C, C-I-sink-) capable dopant already
+  // present, before building `fields` (so the loop below can bind
+  // SpeciesField::cluster without inserting into st.fields mid-iteration).
+  // "C_cl" accumulates C-I sink capture (see run_ted's C-I sink block), not
+  // BIC-style clustering (cluster_params() returns kf=0 for "C").
   std::vector<std::string> cluster_syms;
   for (const auto& [sym, conc] : st.fields) {
-    if ((sym == "B" || sym == "As") && find_dopant(sym)) cluster_syms.push_back(sym);
+    if ((sym == "B" || sym == "As" || sym == "C") && find_dopant(sym))
+      cluster_syms.push_back(sym);
   }
   for (const auto& sym : cluster_syms)
     st.fields[sym + "_cl"].resize(st.mesh.cells.size(), 0.0);
@@ -957,7 +960,7 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     const Dopant* d = find_dopant(sym);
     if (!d) continue;
     SpeciesField sf{d, &conc};
-    if (sym == "B" || sym == "As") sf.cluster = &st.fields[sym + "_cl"];
+    if (sym == "B" || sym == "As" || sym == "C") sf.cluster = &st.fields[sym + "_cl"];
     fields.push_back(sf);
   }
   if (fields.empty()) {
@@ -1037,6 +1040,7 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
     auto& act = extra.back();
     for (std::size_t i = 0; i < nc; ++i) {
       act[i] = active_concentration(*d, conc[i], st.last_temp);
+      if (d->type == DopType::neutral) continue;  // P2-8: no net charge
       net[i] += (d->type == DopType::donor) ? act[i] : -act[i];
     }
   }
