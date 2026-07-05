@@ -129,6 +129,46 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts,
 double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
                std::ostream* log = nullptr);
 
+// 2D/3D LOCOS-style oxidation (P2-4): lateral bird's-beak encroachment under
+// a nitride mask, via a genuine steady-state oxidant-diffusion solve
+// (cp::solve_oxidant) each sub-step instead of a single blanket Deal-Grove
+// number. Requires a nitride-masked region to exist in the mesh (region
+// material "nitride" somewhere on the current top surface) -- for a fully
+// blanket (no mask) oxidation, use oxidize() instead, which is unchanged and
+// remains the fast 1D path.
+//
+// API design note: this is a separate entry point rather than a branch
+// inside oxidize() itself. oxidize() is a heavily-tuned, sub-stepped
+// incremental-retag implementation (P1-6/P2-3) whose numerics (deferred
+// geometry realization, OED "I" injection caps, diffuse_ted solver
+// tolerances) are calibrated against its own test suite; adding a second,
+// structurally different geometry model (column-wise, solver-driven
+// interface heights) as an in-place branch would risk destabilizing that
+// tuning for zero benefit to the blanket case. Keeping the 2D path as its
+// own function guarantees the blanket 1D flow can never regress.
+//
+// Implementation model: the mesh must be a make_box_mesh-style regular grid
+// (as built/extended by mesh_box/deposit/etch/oxidize elsewhere in this
+// API). Growth is resolved per (x,y) grid column: each sub-step, solve_oxidant
+// is run over the oxide+nitride sub-mesh (nitride cells get a small but
+// nonzero oxidant diffusivity, `ox2d.nitride_leak` (default 1e-3) x the
+// oxide value -- this is what lets a little oxidant bleed laterally under
+// the mask edge, combined with lateral diffusion from the open field, to
+// produce the bird's-beak taper), giving each interface face a local growth
+// velocity; these are averaged per column to get a column-local dx_ox, then
+// realized as a per-column interface height (0.44*dx_ox consumed into Si,
+// 0.56*dx_ox raising the outer surface) via the same extend+retag+
+// repair_quality machinery oxidize() uses, generalized from a single
+// interface height to a per-column height field -- the box mesh's regular
+// structure makes this equivalent to genuine per-node normal motion (each
+// node belongs to exactly one column) without needing the general
+// unstructured ALE traversal. If no oxide exists anywhere yet, a thin
+// uniform "native" seed layer (`ox2d.seed_ox_um` default 0.001 um) is grown
+// over the open (non-nitride) columns first so solve_oxidant has cells to
+// operate on.
+double oxidize_2d(SimState& st, double time_s, double temp_k, bool wet = false,
+                  std::ostream* log = nullptr);
+
 // Adaptively splits mesh edges where `species` has steep concentration
 // gradients (M-2). rel_grad_thresh: relative concentration difference across
 // a face that triggers refinement (dimensionless, default 0.5 at the

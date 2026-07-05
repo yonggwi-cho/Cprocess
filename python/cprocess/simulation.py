@@ -261,6 +261,20 @@ class Simulation:
                                    _celsius_to_k(temp), bool(wet)))
         return self
 
+    def oxidize_2d(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
+        """2D/3D LOCOS oxidation (P2-4): bird's-beak lateral encroachment.
+
+        time in minutes, temp in Celsius. Requires a nitride-masked region
+        to already be present in the mesh (deposit("nitride", ...) then
+        etch an opening); raises RuntimeError otherwise -- use oxidize()
+        for blanket (1D) oxidation. Solves a steady-state oxidant-diffusion
+        model each sub-step instead of a single blanket Deal-Grove number,
+        so the oxide tapers laterally under the mask edge.
+        """
+        self._emit(_c.proc_oxidize_2d(self._st, time * MIN,
+                                      _celsius_to_k(temp), bool(wet)))
+        return self
+
     def strip(self) -> "Simulation":
         """Remove all remaining photoresist."""
         self._emit(_c.proc_strip(self._st))

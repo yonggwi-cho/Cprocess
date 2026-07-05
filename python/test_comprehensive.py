@@ -729,6 +729,49 @@ def test_nitride_barrier_python():
 
 
 # ---------------------------------------------------------------------------
+def test_oxidize_2d_python():
+    """oxidize_2d (P2-4): bird's-beak LOCOS oxidation. deposit('nitride') +
+    an etched opening, then oxidize_2d() must complete, grow the open
+    field's surface, and leave the mesh finite/valid."""
+    print("test_oxidize_2d_python")
+    sim = cp.Simulation()
+    sim.mesh(0.4, 0.2, 0.5, 8, 4, 50)
+    sim.region("silicon")
+    sim.deposit("nitride", thickness=0.05)
+    z_before = sim.bbox()[1][2]
+    # Open the field for x < 0.2 um; nitride remains for x in [0.2, 0.4].
+    sim.etch(0.05, poly=[(0, 0), (0.2, 0), (0.2, 0.2), (0, 0.2)], material="nitride")
+    sim.oxidize_2d(60.0, 1000.0, wet=True)
+    z_after = sim.bbox()[1][2]
+    n_cells_after = sim.n_cells
+
+    check(np.all(np.isfinite(sim.mesh_obj.cell_vol)), "oxidize_2d: all cell volumes finite")
+    check(np.all(np.array(sim.mesh_obj.cell_vol) > 0), "oxidize_2d: no inverted/degenerate cells")
+    check(z_after > z_before, "oxidize_2d: mesh top grew (oxide swell realized)")
+    check(n_cells_after > 0, "oxidize_2d: mesh still has cells")
+
+    # Blanket (no nitride) oxidize() must still work unmodified (no
+    # regression on the 1D path).
+    sim2 = cp.Simulation()
+    sim2.mesh(0.2, 0.2, 0.5, 4, 4, 50)
+    sim2.region("silicon")
+    tox_before = sim2.bbox()[1][2]
+    sim2.oxidize(30, 1000, wet=False)
+    tox_after = sim2.bbox()[1][2]
+    check(tox_after > tox_before, "oxidize() blanket path still grows an oxide layer")
+
+    # oxidize_2d must refuse to run without a nitride mask present.
+    sim3 = cp.Simulation()
+    sim3.mesh(0.2, 0.2, 0.5, 4, 4, 20)
+    sim3.region("silicon")
+    try:
+        sim3.oxidize_2d(10, 1000, wet=True)
+        raise AssertionError("oxidize_2d should raise without a nitride mask")
+    except RuntimeError:
+        check(True, "oxidize_2d: raises RuntimeError without a nitride mask")
+
+
+# ---------------------------------------------------------------------------
 def test_activation_python():
     """Simulation.active() clamps at the solid solubility; activation=False
     still runs without error."""
@@ -1090,6 +1133,7 @@ if __name__ == "__main__":
     test_segregation_dose_loss()
     test_oed_python()
     test_nitride_barrier_python()
+    test_oxidize_2d_python()
     test_activation_python()
     test_rta_ramp_python()
     test_pearson_python()

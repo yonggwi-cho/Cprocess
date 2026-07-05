@@ -528,6 +528,20 @@ PYBIND11_MODULE(_cprocess, m) {
       "Blanket thermal oxidation (Deal-Grove). time in s, temp in K.\n"
       "Returns a log string.");
 
+  m.def("proc_oxidize_2d",
+      [](SimState& st, double time_s, double temp_k, bool wet) {
+        std::ostringstream log;
+        proc::oxidize_2d(st, time_s, temp_k, wet, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("time_s"), py::arg("temp_k"),
+      py::arg("wet") = false,
+      "2D/3D LOCOS oxidation (P2-4): bird's-beak lateral encroachment under\n"
+      "a nitride mask, via a steady-state oxidant-diffusion solve each\n"
+      "sub-step. Requires a nitride-masked region already present in the\n"
+      "mesh; raises if none is found (use oxidize() for blanket oxidation).\n"
+      "time in s, temp in K. Returns a log string.");
+
   m.def("proc_refine",
       [](SimState& st, const std::string& species, double thresh, int passes) {
         std::ostringstream log;

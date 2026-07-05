@@ -49,11 +49,14 @@ std::vector<Vec3> compute_node_normals(const Mesh& m, const MeshTopology& topo) 
   return normals;
 }
 
-AleResult ale_move(Mesh& m, const MeshTopology& topo,
-                   const std::vector<Vec3>& node_normals,
-                   double v_n, double dt,
-                   std::function<bool(int)> mask_fn,
-                   int smooth_iters) {
+namespace {
+
+// Shared implementation: `disp_of(i)` gives the displacement to apply to
+// boundary/interface node i (the scalar and per-node overloads differ only
+// in how this displacement is computed).
+AleResult ale_move_impl(Mesh& m, const MeshTopology& topo,
+                        const std::function<Vec3(int)>& disp_of,
+                        std::function<bool(int)> mask_fn, int smooth_iters) {
   const int nn = static_cast<int>(m.nodes.size());
 
   auto no_inversion = [&](int node, const Vec3& pos) {
@@ -67,15 +70,14 @@ AleResult ale_move(Mesh& m, const MeshTopology& topo,
   };
 
   AleResult res;
-  const Vec3 zero{};
 
   // Move boundary/interface nodes.
   for (int i = 0; i < nn; ++i) {
     if (!topo.node_boundary[i] && !topo.node_interface[i]) continue;
-    if (norm(node_normals[i]) < 1e-15) continue;
     if (mask_fn && mask_fn(i)) continue;
 
-    const Vec3 disp = (v_n * dt) * node_normals[i];
+    const Vec3 disp = disp_of(i);
+    if (norm(disp) < 1e-300) continue;
     const Vec3 cand = m.nodes[i] + disp;
     if (no_inversion(i, cand)) {
       m.nodes[i] = cand;
@@ -99,6 +101,32 @@ AleResult ale_move(Mesh& m, const MeshTopology& topo,
   }
 
   return res;
+}
+
+}  // namespace
+
+AleResult ale_move(Mesh& m, const MeshTopology& topo,
+                   const std::vector<Vec3>& node_normals,
+                   double v_n, double dt,
+                   std::function<bool(int)> mask_fn,
+                   int smooth_iters) {
+  return ale_move_impl(
+      m, topo,
+      [&](int i) { return (norm(node_normals[i]) < 1e-15) ? Vec3{} : (v_n * dt) * node_normals[i]; },
+      std::move(mask_fn), smooth_iters);
+}
+
+AleResult ale_move(Mesh& m, const MeshTopology& topo,
+                   const std::vector<Vec3>& node_normals,
+                   const std::vector<double>& vn_node, double dt,
+                   std::function<bool(int)> mask_fn,
+                   int smooth_iters) {
+  return ale_move_impl(
+      m, topo,
+      [&](int i) {
+        return (norm(node_normals[i]) < 1e-15) ? Vec3{} : (vn_node[i] * dt) * node_normals[i];
+      },
+      std::move(mask_fn), smooth_iters);
 }
 
 void rescale_fields_for_volume_change(
