@@ -24,6 +24,7 @@ add_library(cprocess_core
   src/field_transfer.cpp
   src/levelset.cpp
   src/mechanics.cpp
+  src/fem.cpp
   src/materials.cpp
   src/param_db.cpp
   src/implant.cpp
@@ -54,7 +55,7 @@ add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
 target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d)
+foreach(t mesh solver gmsh diffusion mc remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d fem)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})
