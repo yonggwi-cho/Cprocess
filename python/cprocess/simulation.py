@@ -275,6 +275,21 @@ class Simulation:
                                       _celsius_to_k(temp), bool(wet)))
         return self
 
+    def mechanics(self, temp: float, time: float) -> "Simulation":
+        """Linear-elastic FEM mechanics solve (P2-6).
+
+        temp in Celsius, time in minutes. Builds a per-cell eigenstrain load
+        from thermal mismatch (dT = temp - 300K reference) and any intrinsic
+        film stress (ParamDB "mech.sigma0.<material>"), applies Dirichlet BCs
+        (zmin fixed, lateral faces roller), solves for the displacement field
+        via cg_ilu0, and writes the per-cell Voigt stress (dyn/cm^2) to fields
+        "sxx", "syy", "szz", "sxy", "syz", "sxz". Then applies `time` worth of
+        Maxwell relaxation (ParamDB "mech.tau.<material>" in seconds; 0/unset
+        means purely elastic).
+        """
+        self._emit(_c.proc_mechanics(self._st, _celsius_to_k(temp), time * MIN))
+        return self
+
     def strip(self) -> "Simulation":
         """Remove all remaining photoresist."""
         self._emit(_c.proc_strip(self._st))

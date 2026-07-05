@@ -1,9 +1,13 @@
+#include <cctype>
 #include <cstdio>
 #include <cmath>
+#include <string>
 
 #include "cprocess/fem.hpp"
 #include "cprocess/mesh.hpp"
 #include "cprocess/mechanics.hpp"
+#include "cprocess/param_db.hpp"
+#include "cprocess/process.hpp"
 #include "test_util.hpp"
 
 using namespace cp;
@@ -92,6 +96,180 @@ int main() {
     const double rel_stress = max_diff / std::fabs(sxx0);
     std::printf("patch test: element sigma_xx uniform to rel %.3e\n", rel_stress);
     CHECK(rel_stress < 1e-8);
+  }
+
+  // ---- Test 2: uniform thermal expansion, single material -----------------
+  // A blanket temperature step on a homogeneous Si block with zmin fixed and
+  // roller sides (proc::mechanics' own BC) is a stress-free (rigid-body-free)
+  // expansion: u = alpha*dT*(x-x0) exactly satisfies both the PDE and every
+  // BC, so the *total* stress should be numerically zero. We check the von
+  // Mises deviatoric invariant rather than raw components: von Mises is
+  // BC-orientation independent (it doesn't care whether a fixed direction
+  // happens to carry a nonzero reaction-like normal stress) and is the
+  // physically meaningful "is this actually a hydrostatic-only, no-shear-no-
+  // deviation state" check the spec asks for.
+  {
+    ParamDB::instance().clear();
+    SimState st;
+    proc::mesh_box(st, 0, 1e-4, 0, 1e-4, 0, 1e-4, 3, 3, 3);
+    proc::set_region(st, "silicon", -1);
+    proc::mechanics(st, 300.0 + 900.0, 0.0);  // dT=900K, no relaxation step
+
+    const auto& sxx = st.fields.at("sxx");
+    const auto& syy = st.fields.at("syy");
+    const auto& szz = st.fields.at("szz");
+    const auto& sxy = st.fields.at("sxy");
+    const auto& syz = st.fields.at("syz");
+    const auto& sxz = st.fields.at("sxz");
+    double max_vm = 0.0;
+    for (std::size_t c = 0; c < sxx.size(); ++c) {
+      // stored order is (xx,yy,zz,xy,yz,xz); von_mises() wants
+      // (xx,yy,zz,yz,xz,xy) -- permute on the way in.
+      const double s[6] = {sxx[c], syy[c], szz[c], syz[c], sxz[c], sxy[c]};
+      max_vm = std::max(max_vm, von_mises(s));
+    }
+    std::printf("uniform expansion: max von Mises = %.3e dyn/cm^2 (%.3e MPa)\n",
+               max_vm, max_vm * 1e-7);
+    CHECK(max_vm * 1e-7 < 1.0);  // < 1 MPa, per spec
+  }
+
+  // ---- Test 3: bimaterial Si substrate + oxide film ------------------------
+  // Grow a thin oxide film on the Si block via proc::deposit, then apply the
+  // same dT=900K. Physical sign check (eigenstrain FEM, reference stress-free
+  // at 300K, heating to 1200K): the film's own free thermal strain
+  // alpha_ox*dT is *smaller* than the substrate's alpha_si*dT (Si has ~5x the
+  // oxide's CTE), so a substrate-dominated (thick-substrate / thin-film)
+  // bonded system drags the film's actual in-plane strain up toward the
+  // substrate's larger free strain -- i.e. the film ends up strained *beyond*
+  // its own stress-free state, which is TENSION (sigma_xx > 0), not
+  // compression. This is the opposite sign from the task spec's stated
+  // expectation (spec assumed the sign a *cooling* step would give, matching
+  // the well-known "thermally grown SiO2 is compressive at room temperature"
+  // fact -- that fact is about cooling *down* from growth temperature, while
+  // this proc::mechanics call is a *heating* step, temp_k > 300K reference).
+  // Verified by direct instrumentation (printed signs/magnitudes below) and
+  // by the algebra above at both the alpha level and by re-deriving with the
+  // opposite-sign convention (dT<0) below in this same test, which does
+  // reproduce compression as the spec describes. Both directions are
+  // reported and checked so the test documents (and locks in) the actual,
+  // verified physics of this implementation rather than silently disagreeing
+  // with the spec text.
+  {
+    ParamDB::instance().clear();
+    SimState st;
+    proc::mesh_box(st, 0, 1e-4, 0, 1e-4, 0, 0.8e-4, 3, 3, 8);
+    proc::set_region(st, "silicon", -1);
+    proc::deposit(st, "oxide", 0.1e-4, 2);  // thin oxide film on top
+
+    // Locate a film cell (topmost) and a substrate-surface cell just below
+    // the interface, both away from the lateral (roller) boundaries so the
+    // measured stress isn't dominated by BC artifacts.
+    const BBox bb = st.mesh.bbox();
+    const double xc = 0.5 * (bb.lo.x + bb.hi.x);
+    const double yc = 0.5 * (bb.lo.y + bb.hi.y);
+    auto near_column = [&](const Vec3& p) {
+      return std::fabs(p.x - xc) < 0.3e-4 && std::fabs(p.y - yc) < 0.3e-4;
+    };
+    auto material_of = [&](int cell) {
+      auto it = st.region_material.find(st.mesh.cell_region[cell]);
+      return it == st.region_material.end() ? std::string("silicon") : it->second;
+    };
+    auto is_ox = [](const std::string& m) {
+      std::string l = m;
+      for (char& c : l) c = static_cast<char>(std::tolower(c));
+      return l == "oxide" || l == "sio2";
+    };
+
+    // Heating step (temp_k > 300K reference).
+    proc::mechanics(st, 300.0 + 900.0, 0.0);
+    {
+      const auto& sxx = st.fields.at("sxx");
+      double film_z_top = -1e300, sub_z_top = -1e300;
+      double film_sxx = 0, sub_sxx = 0;
+      for (std::size_t c = 0; c < sxx.size(); ++c) {
+        const Vec3& p = st.mesh.cell_cent[c];
+        if (!near_column(p)) continue;
+        if (is_ox(material_of(static_cast<int>(c)))) {
+          if (p.z > film_z_top) { film_z_top = p.z; film_sxx = sxx[c]; }
+        } else {
+          if (p.z > sub_z_top) { sub_z_top = p.z; sub_sxx = sxx[c]; }
+        }
+      }
+      std::printf("bimaterial heating (dT=+900K): film sxx=%.3e MPa, "
+                 "substrate-surface sxx=%.3e MPa\n",
+                 film_sxx * 1e-7, sub_sxx * 1e-7);
+      // Heating: film's own free strain undershoots the substrate's, so the
+      // substrate pulls the film into tension (see comment above); by
+      // Newton's third law the substrate surface right under the film feels
+      // the reaction (a compressive nudge from the film pulling inward).
+      CHECK(film_sxx > 0.0);
+      CHECK(sub_sxx < 0.0);
+      const double mag_mpa = std::fabs(film_sxx) * 1e-7;
+      std::printf("bimaterial heating: |film stress| = %.3g MPa\n", mag_mpa);
+      CHECK(mag_mpa > 10.0 && mag_mpa < 1000.0);
+    }
+
+    // Cooling step (temp_k < 300K reference) reproduces the spec's stated
+    // sign (film compressive, substrate-surface tensile) -- this is the
+    // "thermally grown oxide cooling from a high growth temperature" case.
+    proc::mechanics(st, 300.0 - 900.0, 0.0);
+    {
+      const auto& sxx = st.fields.at("sxx");
+      double film_z_top = -1e300, sub_z_top = -1e300;
+      double film_sxx = 0, sub_sxx = 0;
+      for (std::size_t c = 0; c < sxx.size(); ++c) {
+        const Vec3& p = st.mesh.cell_cent[c];
+        if (!near_column(p)) continue;
+        if (is_ox(material_of(static_cast<int>(c)))) {
+          if (p.z > film_z_top) { film_z_top = p.z; film_sxx = sxx[c]; }
+        } else {
+          if (p.z > sub_z_top) { sub_z_top = p.z; sub_sxx = sxx[c]; }
+        }
+      }
+      std::printf("bimaterial cooling (dT=-900K): film sxx=%.3e MPa, "
+                 "substrate-surface sxx=%.3e MPa\n",
+                 film_sxx * 1e-7, sub_sxx * 1e-7);
+      CHECK(film_sxx < 0.0);
+      CHECK(sub_sxx > 0.0);
+      const double mag_mpa = std::fabs(film_sxx) * 1e-7;
+      CHECK(mag_mpa > 10.0 && mag_mpa < 1000.0);
+    }
+  }
+
+  // ---- Test 4: Maxwell relaxation of the oxide film stress -----------------
+  {
+    ParamDB::instance().clear();
+    ParamDB::instance().set("mech.tau.oxide", 60.0);  // 60 s relaxation time
+    SimState st;
+    proc::mesh_box(st, 0, 1e-4, 0, 1e-4, 0, 0.8e-4, 3, 3, 8);
+    proc::set_region(st, "silicon", -1);
+    proc::deposit(st, "oxide", 0.1e-4, 2);
+
+    proc::mechanics(st, 300.0 - 900.0, 0.0);  // cooling: film starts compressive
+    const auto& sxx0 = st.fields.at("sxx");
+    double film0 = 0.0;
+    int film_cell = -1;
+    {
+      double best_z = -1e300;
+      for (std::size_t c = 0; c < sxx0.size(); ++c) {
+        auto it = st.region_material.find(st.mesh.cell_region[c]);
+        const std::string mat = it == st.region_material.end() ? "silicon" : it->second;
+        if (mat != "oxide") continue;
+        if (st.mesh.cell_cent[c].z > best_z) { best_z = st.mesh.cell_cent[c].z; film_cell = static_cast<int>(c); }
+      }
+    }
+    CHECK(film_cell >= 0);
+    film0 = sxx0[film_cell];
+    CHECK(std::fabs(film0) > 0.0);
+
+    // 600 s = 10 tau at tau=60s -- re-solving with the *same* dT (no new
+    // thermal load, dt=600s) should decay the elastic stress toward zero.
+    proc::mechanics(st, 300.0 - 900.0, 600.0);
+    const auto& sxx1 = st.fields.at("sxx");
+    const double film1 = sxx1[film_cell];
+    std::printf("relaxation: film sigma_xx %.3e -> %.3e MPa (dt=600s, tau=60s)\n",
+               film0 * 1e-7, film1 * 1e-7);
+    CHECK(std::fabs(film1) < 0.2 * std::fabs(film0));
   }
 
   std::printf("fem tests passed\n");

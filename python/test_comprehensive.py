@@ -1102,6 +1102,39 @@ def test_load_gds_python():
     finally:
         os.unlink(path)
 
+def test_mechanics_python():
+    """P2-6: FEM mechanics smoke test -- sxx field generation, finite values,
+    and the bimaterial (Si substrate + oxide film) sign convention."""
+    sim = cp.Simulation()
+    sim.mesh(1, 1, 0.8, 3, 3, 8)
+    sim.region("silicon")
+    sim.deposit("oxide", 0.1)
+
+    # Heating (dT = +900K relative to the 300K reference): thermal-mismatch
+    # eigenstrain FEM predicts the oxide film (lower CTE than Si) ends up
+    # strained *beyond* its own free expansion -> tension; the Si surface
+    # right under the film reacts into compression (see tests/test_fem.cpp
+    # for the full derivation/measurement this mirrors).
+    sim.mechanics(temp=900 + 300 - 273.15, time=0)
+    for name in ("sxx", "syy", "szz", "sxy", "syz", "sxz"):
+        f = sim.field(name)
+        check(np.all(np.isfinite(f)), f"mechanics: {name} field is finite")
+
+    cents = sim.cell_centroids  # micrometres
+    sxx = sim.field("sxx")
+    z = cents[:, 2]
+    # Substrate is 0..0.8um, oxide film is 0.8..0.9um (deposit("oxide", 0.1)
+    # on top of the 0.8um-tall mesh() call above); split on the interface.
+    ox_idx = np.where(z > 0.8)[0]
+    si_idx = np.where(z <= 0.8)[0]
+    check(len(ox_idx) > 0 and len(si_idx) > 0,
+          "mechanics: bimaterial mesh has both oxide and silicon cells")
+    film_cell = ox_idx[np.argmax(z[ox_idx])]
+    sub_cell = si_idx[np.argmax(z[si_idx])]
+    check(sxx[film_cell] > 0, "mechanics: heating puts the oxide film in tension")
+    check(sxx[sub_cell] < 0,
+          "mechanics: heating puts the Si surface just below the film in compression")
+
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -1142,4 +1175,5 @@ if __name__ == "__main__":
     test_etch_depo_p17()
     test_save_load_state_python()
     test_load_gds_python()
+    test_mechanics_python()
     print("\nall comprehensive Simulation tests passed")

@@ -101,6 +101,28 @@ void etch(SimState& st, double depth,
           const std::string& material = "",
           std::ostream* log = nullptr);
 
+// P2-5: rate/time level-set etch. Uses the cp::levelset toolkit (levelset.hpp)
+// to advect a signed-distance field from the exposed surface, so (unlike the
+// geometric etch() above) an isotropic etch produces a genuine lateral
+// undercut under a mask overhang, and a vertical/anisotropic etch removes
+// material only where the local surface normal faces "up" (away from
+// remaining solid, into gas). `rates`: material name (case-insensitive,
+// "si"/"silicon" aliased) -> etch rate in cm/s; a material absent from the
+// map has rate 0 (untouched). `poly` (cm, closed, empty = blanket) further
+// restricts which (x,y) columns are exposed to the given rates -- material
+// outside the polygon is not attacked even if its rate is nonzero. This
+// coexists with etch() (geometric depth/poly) -- neither replaces the other.
+void etch_rate(SimState& st, const std::map<std::string, double>& rates,
+               double time_s, bool isotropic = true,
+               const std::vector<std::pair<double,double>>& poly = {},
+               std::ostream* log = nullptr);
+
+// P2-5: conformal (isotropic level-set) deposit of `material`, `thickness_cm`
+// thick, measured normal-to-surface everywhere -- including down sidewalls of
+// any existing step/trench, unlike deposit()'s purely vertical film growth.
+void deposit_conformal(SimState& st, const std::string& material,
+                       double thickness_cm, std::ostream* log = nullptr);
+
 // Dirichlet boundary conditions for diffusion.
 void add_bc(SimState& st, const std::string& species, int patch, double conc,
             std::ostream* log = nullptr);
@@ -168,6 +190,23 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
 // operate on.
 double oxidize_2d(SimState& st, double time_s, double temp_k, bool wet = false,
                   std::ostream* log = nullptr);
+
+// Linear-elastic FEM mechanics solve (P2-6): builds a per-cell eigenstrain
+// load from thermal mismatch (alpha_m * dT, dT = temp_k - 300K) and intrinsic
+// film stress (ParamDB "mech.sigma0.<material>", isotropic), applies
+// Dirichlet BCs (roller only at the three "min" faces -- zmin/xmin/ymin,
+// each pinning just its own normal displacement component -- which removes
+// all 6 rigid-body modes while staying compatible with pure thermal
+// expansion; pinning both sides of an axis, or all 3 components at zmin,
+// would suppress thermal expansion outright), solves K u = f via cg_ilu0,
+// computes per-cell Voigt stress
+// sigma = D*(B*u - eps0), then applies one dt_s-worth of Maxwell relaxation
+// (cp::maxwell_update, using ParamDB "mech.tau.<material>" in seconds; 0 or
+// absent means purely elastic/no relaxation). Results are written to
+// st.fields["sxx"], "syy", "szz", "sxy", "syz", "sxz" (dyn/cm^2, the CGS
+// stress unit consistent with the rest of the C++ core).
+void mechanics(SimState& st, double temp_k, double dt_s,
+              std::ostream* log = nullptr);
 
 // Adaptively splits mesh edges where `species` has steep concentration
 // gradients (M-2). rel_grad_thresh: relative concentration difference across

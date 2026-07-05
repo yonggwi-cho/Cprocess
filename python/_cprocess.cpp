@@ -542,6 +542,19 @@ PYBIND11_MODULE(_cprocess, m) {
       "mesh; raises if none is found (use oxidize() for blanket oxidation).\n"
       "time in s, temp in K. Returns a log string.");
 
+  m.def("proc_mechanics",
+      [](SimState& st, double temp_k, double dt_s) {
+        std::ostringstream log;
+        proc::mechanics(st, temp_k, dt_s, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("temp_k"), py::arg("dt_s"),
+      "Linear-elastic FEM mechanics solve (P2-6): thermal-mismatch + "
+      "intrinsic-film-stress eigenstrain loads, Dirichlet BCs (zmin fixed, "
+      "lateral roller), cg_ilu0 solve, per-cell Voigt stress written to "
+      "state fields sxx/syy/szz/sxy/syz/sxz (dyn/cm^2), then one dt_s of "
+      "Maxwell relaxation. temp in K, dt in s. Returns a log string.");
+
   m.def("proc_refine",
       [](SimState& st, const std::string& species, double thresh, int passes) {
         std::ostringstream log;
