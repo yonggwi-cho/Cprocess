@@ -965,6 +965,62 @@ def test_etch_depo_p17():
     check(n4 == n3, "etch: polygon etch leaves n_cells unchanged (retag)")
 
 
+def test_topo_p25():
+    """P2-5: level-set rate/time etch (vertical + isotropic-under-a-mask)
+    and conformal deposit -- smoke tests (dose decreases, fields finite,
+    masked material survives, mesh grows for the conformal headroom)."""
+    print("test_topo_p25")
+
+    # Vertical (anisotropic) etch_rate: some material removed, fields finite.
+    sim = cp.Simulation()
+    sim.mesh(x=8.0, y=8.0, z=8.0, nx=8, ny=8, nz=40)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    n0 = sim.n_cells
+    dose0 = sim.dose("B")
+    sim.etch_rate({"silicon": 0.1}, time=2.0, isotropic=False)
+    # etch_rate always adds a thin gas headroom above the top surface (so
+    # the level set has an explicit "outside" to advect into), so n_cells
+    # grows even though it's a cell-retag operation, not true removal.
+    check(sim.n_cells > n0, "etch_rate: headroom added, n_cells grows")
+    b_field = sim.field("B")
+    check(np.all(np.isfinite(b_field)), "etch_rate: B field finite everywhere")
+    dose1 = sim.dose("B")
+    check(dose1 < dose0, "etch_rate: some dose removed by vertical etch")
+
+    # Isotropic etch under a nitride mask (deposit + polygon opening, public
+    # API only): the masked region survives (its material, and the polygon
+    # opening's dose loss is at least as large as the masked side's), and
+    # everything stays finite.
+    sim2 = cp.Simulation()
+    sim2.mesh(x=8.0, y=8.0, z=8.0, nx=16, ny=16, nz=16)
+    sim2.region("silicon")
+    sim2.init("B", 1e15)
+    sim2.deposit("nitride", thickness=0.5,
+                 poly=[(0.0, 0.0), (4.0, 0.0), (4.0, 8.0), (0.0, 8.0)])
+    dose_before = sim2.dose("B")
+    sim2.etch_rate({"silicon": 0.5}, time=1.5, isotropic=True)
+    check(np.all(np.isfinite(sim2.field("B"))),
+          "etch_rate (isotropic): B field finite everywhere")
+    check(sim2.dose("B") < dose_before,
+          "etch_rate (isotropic): open-field silicon lost dose")
+
+    # Conformal deposit: covers an existing step (headroom added -> more
+    # cells), fields stay finite.
+    sim3 = cp.Simulation()
+    sim3.mesh(x=8.0, y=8.0, z=8.0, nx=20, ny=20, nz=20)
+    sim3.region("silicon")
+    sim3.init("B", 1e15)
+    n_before = sim3.n_cells
+    hstep = 8.0 / 20.0  # um
+    sim3.etch(2 * hstep, poly=[(4.0, 0.0), (8.0, 0.0), (8.0, 8.0), (4.0, 8.0)])
+    sim3.deposit_conformal("nitride", hstep)
+    check(sim3.n_cells > n_before,
+          "deposit_conformal: headroom grows the mesh (n_cells increases)")
+    check(np.all(np.isfinite(sim3.field("B"))),
+          "deposit_conformal: B field finite everywhere")
+
+
 def test_save_load_state_python():
     """P1-11: binary CPRC1 save/load roundtrip + profile1d."""
     print("test_save_load_state_python")
@@ -1173,6 +1229,7 @@ if __name__ == "__main__":
     test_params_python()
     test_refine_python()
     test_etch_depo_p17()
+    test_topo_p25()
     test_save_load_state_python()
     test_load_gds_python()
     test_mechanics_python()

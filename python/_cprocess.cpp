@@ -517,6 +517,39 @@ PYBIND11_MODULE(_cprocess, m) {
       "to a single material (empty = all non-gas materials).\n"
       "Returns a log string.");
 
+  m.def("proc_etch_rate",
+      [](SimState& st, const std::map<std::string, double>& rates,
+         double time_s, bool isotropic,
+         const std::vector<std::pair<double,double>>& poly) {
+        std::ostringstream log;
+        proc::etch_rate(st, rates, time_s, isotropic, poly, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("rates"), py::arg("time_s"),
+      py::arg("isotropic") = true,
+      py::arg("poly") = std::vector<std::pair<double,double>>{},
+      "Level-set rate/time etch (P2-5): rates maps material name -> etch\n"
+      "rate in cm/s (materials absent from the map are not attacked).\n"
+      "isotropic=True undercuts under mask overhangs; isotropic=False\n"
+      "removes material only where the local surface normal faces away\n"
+      "from remaining solid (vertical/RIE approximation). poly restricts\n"
+      "the etch to (x,y) columns inside the polygon (empty = blanket).\n"
+      "Coexists with proc_etch (geometric depth/poly).\n"
+      "Returns a log string.");
+
+  m.def("proc_deposit_conformal",
+      [](SimState& st, const std::string& material, double thickness_cm) {
+        std::ostringstream log;
+        proc::deposit_conformal(st, material, thickness_cm, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("material"), py::arg("thickness_cm"),
+      "Conformal (isotropic level-set) deposit of `material`, `thickness_cm`\n"
+      "thick measured normal-to-surface everywhere, including down\n"
+      "sidewalls of an existing step/trench. Coexists with proc_deposit\n"
+      "(purely vertical film growth).\n"
+      "Returns a log string.");
+
   m.def("proc_oxidize",
       [](SimState& st, double time_s, double temp_k, bool wet) {
         std::ostringstream log;

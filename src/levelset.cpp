@@ -1,19 +1,24 @@
 #include "cprocess/levelset.hpp"
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <queue>
 
 namespace cp {
 
-std::vector<double> levelset_init(const Mesh& m, int region_tag) {
+namespace {
+// Shared implementation for both levelset_init overloads: `is_inside(ci)`
+// decides whether cell ci is on the φ<0 side.
+std::vector<double> levelset_init_impl(const Mesh& m,
+                                       const std::function<bool(int)>& is_inside) {
   const int nn = static_cast<int>(m.nodes.size());
   const int nc = static_cast<int>(m.cells.size());
 
-  // Mark nodes by region membership (any incident cell with region_tag → inside).
+  // Mark nodes by region membership (any incident inside cell → inside).
   std::vector<int> node_inside(nn, 0), node_outside(nn, 0);
   for (int ci = 0; ci < nc; ++ci) {
-    const bool inside = (m.cell_region[ci] == region_tag);
+    const bool inside = is_inside(ci);
     for (int v : m.cells[ci]) {
       if (inside) ++node_inside[v]; else ++node_outside[v];
     }
@@ -83,6 +88,16 @@ std::vector<double> levelset_init(const Mesh& m, int region_tag) {
 
   return phi;
 }
+}  // namespace
+
+std::vector<double> levelset_init(const Mesh& m, int region_tag) {
+  return levelset_init_impl(
+      m, [&](int ci) { return m.cell_region[ci] == region_tag; });
+}
+
+std::vector<double> levelset_init(const Mesh& m, const std::vector<char>& inside) {
+  return levelset_init_impl(m, [&](int ci) { return inside[ci] != 0; });
+}
 
 void levelset_advect(const Mesh& m, std::vector<double>& phi,
                      const std::vector<double>& v_n, double dt) {
@@ -151,6 +166,51 @@ void levelset_reinit(const Mesh& m, std::vector<double>& phi, int max_iters) {
       const double sgn = (phi0[i] >= 0) ? 1.0 : -1.0;
       const double dtau = 0.5 * (h[i] > 0 ? h[i] : 1e-6);
       phi_new[i] = phi[i] + dtau * sgn * (1.0 - grad_mag);
+    }
+    phi = std::move(phi_new);
+  }
+}
+
+void levelset_advect(const Mesh& m, const MeshTopology& topo,
+                     std::vector<double>& phi,
+                     const std::vector<double>& F_node, double dt) {
+  const int nn = static_cast<int>(m.nodes.size());
+  if (dt <= 0.0) return;
+
+  double h_min = std::numeric_limits<double>::max();
+  double max_F = 0.0;
+  for (int i = 0; i < nn; ++i) {
+    max_F = std::max(max_F, std::fabs(F_node[i]));
+    for (int j : topo.node_adj[i]) {
+      const Vec3 dv = m.nodes[j] - m.nodes[i];
+      const double len = std::sqrt(dot(dv, dv));
+      if (len > 1e-30) h_min = std::min(h_min, len);
+    }
+  }
+  if (max_F <= 0.0 || h_min == std::numeric_limits<double>::max()) return;
+
+  const double dt_sub_cfl = 0.5 * h_min / max_F;
+  const int n_sub = std::max(1, static_cast<int>(std::ceil(dt / dt_sub_cfl)));
+  const double dt_sub = dt / n_sub;
+
+  for (int s = 0; s < n_sub; ++s) {
+    std::vector<double> phi_new(nn);
+    for (int i = 0; i < nn; ++i) {
+      const double Fi = F_node[i];
+      double g = 0.0;
+      if (Fi != 0.0) {
+        for (int j : topo.node_adj[i]) {
+          const Vec3 dv = m.nodes[j] - m.nodes[i];
+          const double len = std::sqrt(dot(dv, dv));
+          if (len < 1e-30) continue;
+          if (Fi > 0.0) {
+            g = std::max(g, std::max((phi[i] - phi[j]) / len, 0.0));
+          } else {
+            g = std::max(g, std::max((phi[j] - phi[i]) / len, 0.0));
+          }
+        }
+      }
+      phi_new[i] = phi[i] - dt_sub * Fi * g;
     }
     phi = std::move(phi_new);
   }

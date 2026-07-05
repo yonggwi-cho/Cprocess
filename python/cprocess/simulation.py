@@ -250,6 +250,45 @@ class Simulation:
         self._emit(_c.proc_etch(self._st, depth * UM, poly_cm, material))
         return self
 
+    def etch_rate(self, rates: dict, time: float, isotropic: bool = True,
+                 poly=None) -> "Simulation":
+        """Level-set rate/time etch (P2-5).
+
+        rates: {material_name: rate_um_per_min}, e.g. {"silicon": 0.1}.
+              Materials absent from the dict are not attacked (rate 0).
+        time: etch duration in minutes.
+        isotropic: True undercuts laterally under mask overhangs (a
+              standalone signed-distance-field advection, unlike the
+              vertical-only geometric etch()); False removes material only
+              where the local surface normal faces away from remaining
+              solid (a vertical/RIE approximation).
+        poly: optional sequence of (x, y) tuples in micrometres restricting
+              which (x, y) columns are exposed to the given rates (empty =
+              blanket).
+
+        Coexists with etch() (geometric depth/poly); neither replaces the
+        other.
+        """
+        rates_cm_s = {mat: r * UM / MIN for mat, r in rates.items()}
+        poly_cm = [(x * UM, y * UM) for x, y in poly] if poly else []
+        self._emit(_c.proc_etch_rate(self._st, rates_cm_s, time * MIN,
+                                      bool(isotropic), poly_cm))
+        return self
+
+    def deposit_conformal(self, material: str, thickness: float) -> "Simulation":
+        """Conformal (isotropic level-set) deposit of `material`.
+
+        thickness: film thickness in micrometres, measured normal-to-
+              surface everywhere -- including down the sidewalls of an
+              existing step/trench, unlike deposit()'s purely vertical
+              film growth.
+
+        Coexists with deposit(); neither replaces the other.
+        """
+        self._emit(_c.proc_deposit_conformal(self._st, material,
+                                              thickness * UM))
+        return self
+
     def oxidize(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
         """Blanket thermal oxidation of the exposed silicon top surface.
 

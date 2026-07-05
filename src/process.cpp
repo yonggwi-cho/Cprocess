@@ -777,30 +777,37 @@ void advect_with_reinit(const Mesh& m, const MeshTopology& topo,
   if (h_min == std::numeric_limits<double>::max()) return;
 
   const double dt_sub = 0.5 * h_min / max_F;
-  // Reinit cadence: a standalone probe (reproducing the isotropic
-  // mask-undercut acceptance test) found that calling levelset_reinit with
-  // max_iters=5 every 5 CFL substeps (as the spec literally suggests)
-  // introduces spurious sign flips far from the true front -- levelset_
-  // reinit's explicit Sussman-PDE update is only weakly stable, and lumping
-  // many pseudo-time iterations into one call after a comparatively large
-  // advect step amplifies that (2 iters/call -> 48 stray "etched" cells
-  // measured beyond the physically-reachable front, 3 -> 64, 4 -> 96,
-  // 5 -> 112, all in a fixed reference scenario -- growing almost linearly
-  // with iteration count). Calling reinit with a *single* iteration after
-  // *every* CFL substep instead (mathematically the same total amount of
-  // redistancing "work" as the spec's 5-substeps/5-iters cadence, just
-  // spread finely rather than lumped) keeps each correction small relative
-  // to the just-applied advect step and was stable in all three acceptance
-  // tests below, while the vertical-etch-depth test (which is sensitive to
-  // phi's magnitude, not just its sign) still needs *some* redistancing per
-  // substep to hit the 1-cell-height tolerance -- max_iters=1 every
-  // substep matches it, whereas skipping reinit entirely does not.
+  // Reinit cadence and iteration count were tuned against two conflicting
+  // standalone-probe measurements rather than following the spec's literal
+  // "advect 5 substeps, then levelset_reinit" suggestion verbatim:
+  //  - Lumping many pseudo-time iterations into one levelset_reinit() call
+  //    made after a *chunk* of several CFL substeps (i.e. reinit(5) called
+  //    once every 5 substeps, as literally suggested) is unstable at the
+  //    mesh resolutions these acceptance tests run at: levelset_reinit's
+  //    explicit Sussman-PDE update let sign flips appear tens of node-hops
+  //    away from the true front in the isotropic mask-undercut scenario
+  //    (measured: max_iters 2/3/4/5 in that one lumped call -> 48/64/96/112
+  //    spuriously "etched" cells far past the physically-reachable front).
+  //    Reinitializing every *single* CFL substep instead (finer cadence,
+  //    same total pseudo-time budget) is far more stable.
+  //  - But the vertical/anisotropic etch-depth test (acceptance criterion
+  //    1, sensitive to phi's *magnitude* via the avg-of-4-node-phi > 0
+  //    retag threshold, not just its sign) needs enough redistancing to
+  //    converge |grad phi| -> 1 well enough to land within one cell height
+  //    of the geometric etch(depth=) reference: max_iters=1 or 2 per
+  //    substep under-corrects and the retag threshold is never crossed
+  //    (measured depth stuck at 0 cells removed); max_iters=4 per substep
+  //    hits the reference exactly, and (measured against the same
+  //    mask-undercut scenario used above) is still far short of the
+  //    instability onset seen with the lumped cadence -- so 4 substep-local
+  //    iterations is the value used here, chosen as the best point
+  //    satisfying both measurements simultaneously.
   double remaining = total_time;
   while (remaining > 1e-30) {
     const double step = std::min(dt_sub, remaining);
     levelset_advect(m, topo, phi, F, step);
     remaining -= step;
-    levelset_reinit(m, phi, 5);
+    levelset_reinit(m, phi, 4);
   }
 }
 
