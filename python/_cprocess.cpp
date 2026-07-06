@@ -296,7 +296,10 @@ PYBIND11_MODULE(_cprocess, m) {
       .def_readwrite("activation", &DiffuseOpts::activation,
           "Solid-solubility clamp on charge neutrality")
       .def_readwrite("temp_profile", &DiffuseOpts::temp_profile,
-          "Piecewise-linear T profile [(t_s, T_K), ...]; empty = isothermal");
+          "Piecewise-linear T profile [(t_s, T_K), ...]; empty = isothermal")
+      .def_readwrite("species_parallel", &DiffuseOpts::species_parallel,
+          "PA-3: parallelize per-species solve in run(): "
+          "0=auto, 1=on, -1=off");
 
   py::class_<DirichletBC>(m, "DirichletBC",
       "Fixed-concentration (Dirichlet) boundary condition.")

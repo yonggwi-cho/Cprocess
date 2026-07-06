@@ -339,18 +339,28 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
                                double reaction, bool nonortho,
                                const SegTable& seg,
                                std::vector<double>& rhs, std::vector<Vec3>& grad) {
+  assemble_into(dcell, cold, bcface, cgrad, dt, reaction, nonortho, seg,
+                A_.val, rhs, grad);
+}
+
+void DiffusionSolver::assemble_into(
+    const std::vector<double>& dcell, const std::vector<double>& cold,
+    const std::vector<double>& bcface, const std::vector<double>& cgrad,
+    double dt, double reaction, bool nonortho, const SegTable& seg,
+    std::vector<double>& val, std::vector<double>& rhs,
+    std::vector<Vec3>& grad) {
   const int nc = static_cast<int>(mesh_.cells.size());
   gradients(cgrad, bcface, grad);
 
-  std::fill(A_.val.begin(), A_.val.end(), 0.0);
+  std::fill(val.begin(), val.end(), 0.0);
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < nc; ++i) {
     if (!mask_[i]) {
-      A_.val[diag_[i]] = 1.0;
+      val[diag_[i]] = 1.0;
       rhs[i] = cgrad[i];  // frozen cell holds its value
     } else {
       const double vd = mesh_.cell_vol[i] / dt;
-      A_.val[diag_[i]] = vd + reaction * mesh_.cell_vol[i];
+      val[diag_[i]] = vd + reaction * mesh_.cell_vol[i];
       rhs[i] = vd * cold[i];
     }
   }
@@ -369,10 +379,10 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
         if (dP <= 0 || dN <= 0) continue;
         const double dh = (g.delP + g.delN) / (g.delP / dP + g.delN / dN);
         const double tf = dh * g.g;
-        A_.val[diag_[f.owner]] += tf;
-        A_.val[diag_[f.neigh]] += tf;
-        A_.val[fslot_[fi][0]] -= tf;
-        A_.val[fslot_[fi][1]] -= tf;
+        val[diag_[f.owner]] += tf;
+        val[diag_[f.neigh]] += tf;
+        val[fslot_[fi][0]] -= tf;
+        val[fslot_[fi][1]] -= tf;
         if (nonortho) {
           const Vec3 gf = g.wP * grad[f.owner] + (1.0 - g.wP) * grad[f.neigh];
           const double corr = dh * dot(gf, g.k);
@@ -381,7 +391,7 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
         }
       } else if (g.kind == kBoundOwner && !std::isnan(bcface[fi])) {
         const double tb = dcell[f.owner] * g.gb;
-        A_.val[diag_[f.owner]] += tb;
+        val[diag_[f.owner]] += tb;
         rhs[f.owner] += tb * bcface[fi];
       } else if (g.kind == kSegregation) {
         // A D=0 side blocks flux across this pair entirely (e.g. nitride):
@@ -403,10 +413,10 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
         // fslot_[fi][0] is the (owner,neigh) slot, [1] is (neigh,owner).
         const int s_Lo_to_Hi = ownerIsLo ? fslot_[fi][0] : fslot_[fi][1];
         const int s_Hi_to_Lo = ownerIsLo ? fslot_[fi][1] : fslot_[fi][0];
-        A_.val[diag_[iLo]]  += hA;
-        A_.val[s_Lo_to_Hi]  -= hA * m_seg;
-        A_.val[diag_[iHi]]  += hA * m_seg;
-        A_.val[s_Hi_to_Lo]  -= hA;
+        val[diag_[iLo]]  += hA;
+        val[s_Lo_to_Hi]  -= hA * m_seg;
+        val[diag_[iHi]]  += hA * m_seg;
+        val[s_Hi_to_Lo]  -= hA;
       }
     }
   }
@@ -511,6 +521,27 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
     }
 
     maxrel = 0;
+    // PA-3: species-loop parallelization. Only applies to the classical
+    // (use_newton == false) per-species linear solve below -- the S-3 JFNK
+    // branch shares A_/an ILU0 object across its inner Newton iterations in
+    // a way that would need its own workspace plumbing (residual()'s
+    // assemble() calls, the per-iteration ILU0 factor) to parallelize
+    // safely, which the spec this task implements doesn't cover; it stays
+    // sequential regardless of species_parallel.
+    //
+    // Heuristic (spec-mandated): with few species or a large mesh, the
+    // *inner* OpenMP parallelism already in assemble()/cg_ilu0 (SpMV,
+    // triangular solves) uses the available cores more effectively than
+    // splitting only ns-many outer iterations across them. With several
+    // species on a small-to-moderate mesh, per-species work is small enough
+    // that inner parallelism starves (thread launch/sync overhead exceeds
+    // useful work per call), so handing whole species to separate threads
+    // wins instead. ns>=3 and nc<50000 are the crossover point measured for
+    // this solver's assemble+cg_ilu0 cost profile.
+    const bool sp = !o.use_newton &&
+                    ((o.species_parallel > 0) ||
+                     (o.species_parallel == 0 && ns >= 3 && nc < 50000));
+    if (!sp) {
     for (int s = 0; s < ns; ++s) {
       // P2-8: a species with D==0 everywhere (e.g. Ge, an immobile marker)
       // solves to an exact no-op (assemble() reduces to the pure identity
@@ -658,6 +689,90 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
                 maxrel, std::fabs(cw[i] - c[i]) / (std::fabs(cw[i]) + cfloor));
           c = cw;
         }
+      }
+    }
+    } else {
+      // PA-3: species-parallel path. Only ever reaches here when
+      // !o.use_newton, so every species runs the plain Picard-CG branch
+      // above -- reproduced here with per-species workspaces instead of the
+      // shared A_/rhs/grad/x members, so the #pragma omp parallel for below
+      // has no data races. Numerically identical to the serial branch
+      // (same assemble_into() math, same cg_ilu0/bicgstab_ilu0 calls, same
+      // warm start) -- just executed out of the shared A_/rhs/grad buffers.
+      std::vector<SolveWorkspace> ws(ns);
+      for (int s = 0; s < ns; ++s) {
+        ws[s].Aval.resize(A_.val.size());
+        ws[s].rhs.resize(nc);
+        ws[s].x.resize(nc);
+      }
+      // Per-species partial results, reduced deterministically after the
+      // parallel region (spec: array + serial max, not reduction(max:), so
+      // the result does not depend on thread scheduling order).
+      std::vector<double> maxrel_s(ns, 0.0);
+      std::vector<int> lin_iters_s(ns, 0);
+      std::vector<char> failed(ns, 0);
+      std::vector<std::string> errmsg(ns);
+#pragma omp parallel for schedule(dynamic, 1)
+      for (int s = 0; s < ns; ++s) {
+        // Exception safety: solver failures must not throw out of a
+        // parallel region (undefined behavior across threads) -- record
+        // per-species failure and throw only after the region ends.
+        try {
+          bool any_d = false;
+          for (double v : dcell[s]) if (v > 0) { any_d = true; break; }
+          if (!any_d) continue;
+          const Dopant& dp = *fields[s].dopant;
+          std::vector<double>& c = *fields[s].conc;
+          const SegTable seg = make_seg_table(dp, T, has_segregation_);
+
+          assemble_into(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho,
+                        seg, ws[s].Aval, ws[s].rhs, ws[s].grad);
+
+          bool need_bicg = false;
+          for (const auto& [lo, hi] : seg_pairs_)
+            if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) {
+              need_bicg = true;
+              break;
+            }
+
+          // Shallow copy of the shared CSR pattern (ptr/col), species-own
+          // values -- per the spec, cheap enough for the nc<50000 regime
+          // this heuristic targets.
+          CSR As{A_.n, A_.ptr, A_.col, ws[s].Aval};
+
+          ws[s].x = c;  // warm start
+          SolveResult sr;
+          if (need_bicg) {
+            sr = bicgstab_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
+          } else {
+            sr = cg_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
+          }
+          if (!sr.converged) {
+            ws[s].x = c;
+            sr = bicgstab_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
+            if (!sr.converged) {
+              failed[s] = 1;
+              errmsg[s] = "diffusion: linear solver failed (resid=" +
+                          std::to_string(sr.resid) + ")";
+              continue;
+            }
+          }
+          lin_iters_s[s] = sr.iters;
+          double mr = 0;
+          for (int i = 0; i < nc; ++i)
+            mr = std::max(mr, std::fabs(ws[s].x[i] - c[i]) /
+                                  (std::fabs(ws[s].x[i]) + cfloor));
+          maxrel_s[s] = mr;
+          c = ws[s].x;
+        } catch (const std::exception& e) {
+          failed[s] = 1;
+          errmsg[s] = e.what();
+        }
+      }
+      for (int s = 0; s < ns; ++s) {
+        if (failed[s]) throw std::runtime_error(errmsg[s]);
+        lin_iters += lin_iters_s[s];
+        maxrel = std::max(maxrel, maxrel_s[s]);
       }
     }
     if (maxrel < o.picard_tol) break;

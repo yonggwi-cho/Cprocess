@@ -60,6 +60,16 @@ struct DiffuseOpts {
   // If non-null, the dt of every *accepted* step is appended, in order.
   // Diagnostic only; never read by run()/run_ted() themselves.
   mutable std::vector<double>* step_log = nullptr;
+
+  // PA-3: parallelize the per-species assemble+solve inside run()'s Picard
+  // loop across species (OpenMP), instead of (or in addition to) the
+  // existing inner (SpMV/assembly) parallelism. 0 = auto-decide from
+  // problem size (see the heuristic at its use site in step_once());
+  // 1 = force on; -1 = force off. Only applies to the classical
+  // (use_newton == false) per-species linear solve -- see step_once() for
+  // why the JFNK (S-3) path is excluded. When effectively off, run()'s code
+  // path is byte-identical to pre-PA-3 behavior.
+  int species_parallel = 0;
 };
 
 // T(t) [K]: linear interpolation of opts.temp_profile; opts.temp if empty.
@@ -179,6 +189,22 @@ class DiffusionSolver {
                 bool nonortho, const SegTable& seg,
                 std::vector<double>& rhs, std::vector<Vec3>& grad);
 
+  // PA-3: same assembly as assemble(), but targeting an arbitrary CSR value
+  // buffer `val` (matching A_'s sparsity pattern: ptr_/col_/diag_/fslot_)
+  // instead of the shared A_.val member. assemble() is now a thin wrapper
+  // delegating here with val = A_.val. This lets the species loop in
+  // step_once() run `#pragma omp parallel for` over species, each writing
+  // its own SolveWorkspace::Aval/rhs/grad, without racing on shared state --
+  // the only thing every species reads (never writes) concurrently is the
+  // matrix pattern (A_.ptr/A_.col) and fg_/diag_/fslot_/face_colors_.
+  void assemble_into(const std::vector<double>& dcell,
+                      const std::vector<double>& cold,
+                      const std::vector<double>& bcface,
+                      const std::vector<double>& cgrad, double dt,
+                      double reaction, bool nonortho, const SegTable& seg,
+                      std::vector<double>& val, std::vector<double>& rhs,
+                      std::vector<Vec3>& grad);
+
   // S-3: F(c) = A(dcell_c) * c - rhs(dcell_c, cold, c) for one backward-Euler
   // step, evaluated via assemble() (which overwrites A_/rhs as a side
   // effect -- callers that need a frozen preconditioner factor it from A_
@@ -230,6 +256,14 @@ class DiffusionSolver {
                       std::vector<double>& ci_bcface,
                       std::vector<double>& cv_bcface, double& smax_out,
                       double& c311max_out, PointDefectParams& pdp_out);
+
+  // PA-3: per-species scratch buffers used by the species-parallel path in
+  // step_once(). Allocated fresh per step_once() call when that path is
+  // taken (small, ns of them); each species writes only its own entry.
+  struct SolveWorkspace {
+    std::vector<double> Aval, rhs, x;
+    std::vector<Vec3> grad;
+  };
 
   const Mesh& mesh_;
   std::vector<char> mask_;

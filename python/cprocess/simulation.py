@@ -369,8 +369,16 @@ class Simulation:
     def diffuse(self, time: float, temp: float = None, *,
                 dt: float = 0.0, field_enh: bool = True,
                 nonortho: bool = True, ted: bool = False,
-                activation: bool = True, ramp=None) -> "Simulation":
+                activation: bool = True, ramp=None,
+                species_parallel: int = 0) -> "Simulation":
         """Anneal: `time` in minutes, `temp` in Celsius, `dt` in minutes.
+
+        `species_parallel` (PA-3) controls whether the per-species
+        assemble+solve inside the Picard loop runs across species in
+        parallel (OpenMP): 0 (default) auto-decides from problem size,
+        1 forces it on, -1 forces it off. Only affects run() (not ted=True),
+        and only the classical linear-solve path; numerically identical to
+        the sequential path either way.
 
         `ted=True` enables transient enhanced diffusion, coupling the excess
         self-interstitials seeded by implant(damage=True) into the dopant
@@ -402,6 +410,7 @@ class Simulation:
         opts.nonortho = nonortho
         opts.verbosity = 1 if self.verbose else 0
         opts.activation = activation
+        opts.species_parallel = species_parallel
         if ted:
             self._emit(_c.proc_diffuse_ted(self._st, opts))
         else:

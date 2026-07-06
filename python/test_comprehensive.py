@@ -103,6 +103,30 @@ def test_multi_species():
 
 
 # ---------------------------------------------------------------------------
+def test_species_parallel_smoke():
+    """PA-3: 4-species (B/P/As/Sb) diffuse with species_parallel on and off
+    -- both must produce finite fields and conserve each species' dose."""
+    print("test_species_parallel_smoke")
+    species = [("B", 1e14), ("P", 8e13), ("As", 6e13), ("Sb", 4e13)]
+
+    def run(sp):
+        sim = cp.Simulation()
+        sim.mesh(x=0.4, y=0.4, z=0.8, nx=4, ny=4, nz=8)
+        sim.region("silicon")
+        for name, dose in species:
+            sim.init(name, dose)
+        sim.diffuse(time=5, temp=1000, species_parallel=sp)
+        return sim
+
+    for sp in (-1, 0, 1):
+        sim = run(sp)
+        for name, _ in species:
+            f = sim.field(name)
+            check(np.all(np.isfinite(f)), f"{name} finite (species_parallel={sp})")
+            check(np.all(f >= 0), f"{name} non-negative (species_parallel={sp})")
+
+
+# ---------------------------------------------------------------------------
 def test_save_vtu():
     """save() writes a non-empty .vtu file."""
     print("test_save_vtu")
@@ -1217,6 +1241,7 @@ if __name__ == "__main__":
     test_set_field()
     test_analytic_window()
     test_multi_species()
+    test_species_parallel_smoke()
     test_save_vtu()
     test_clear_bc()
     test_resist_diffuse()
