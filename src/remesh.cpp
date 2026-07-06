@@ -6,6 +6,13 @@
 #include <set>
 #include <stdexcept>
 
+#ifdef _OPENMP
+#  include <omp.h>
+#else
+static inline int omp_get_thread_num()  { return 0; }
+static inline int omp_get_max_threads() { return 1; }
+#endif
+
 #include "cprocess/topology.hpp"
 
 namespace cp {
@@ -392,9 +399,20 @@ RepairResult repair_quality(Mesh& m, std::vector<std::vector<double>*>* fields,
     if (qs.n_sliver == 0) break;
 
     // Collect the longest edge of every sliver cell, deduplicated.
-    std::vector<std::pair<int, int>> candidates;
-    std::set<std::pair<int, int>> seen;
+    // Parallelized: each thread scans its (schedule(static)) chunk of cells
+    // into a thread-local buffer with no shared-state writes (tet_quality and
+    // longest-edge selection are per-cell, so there is no data race). The
+    // buffers are then concatenated and sorted/uniqued, which yields a
+    // deterministic "edge dictionary order" independent of thread count and
+    // of chunk boundaries. This changes the resulting order from the old
+    // "first-discovered-cell order" but the *set* of candidate edges is
+    // identical; downstream split_edges dedup logic is likewise driven by
+    // this same order in both the 1-thread and N-thread cases, so results
+    // are bit-identical across thread counts (see PA-1 spec section (a)).
     const int nc = static_cast<int>(m.cells.size());
+    const int nth = std::max(1, omp_get_max_threads());
+    std::vector<std::vector<std::pair<int, int>>> tl(nth);
+#pragma omp parallel for schedule(static)
     for (int ci = 0; ci < nc; ++ci) {
       const auto& c = m.cells[ci];
       const double q = tet_quality(m.nodes[c[0]], m.nodes[c[1]], m.nodes[c[2]],
@@ -410,8 +428,14 @@ RepairResult repair_quality(Mesh& m, std::vector<std::vector<double>*>* fields,
       }
       int a = c[kEdges[best][0]], b = c[kEdges[best][1]];
       if (a > b) std::swap(a, b);
-      if (seen.insert({a, b}).second) candidates.push_back({a, b});
+      tl[omp_get_thread_num()].push_back({a, b});
     }
+    std::vector<std::pair<int, int>> candidates;
+    for (auto& v : tl)
+      candidates.insert(candidates.end(), v.begin(), v.end());
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                      candidates.end());
 
     if (!candidates.empty()) {
       SplitResult sr = split_edges(m, candidates);

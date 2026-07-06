@@ -11,6 +11,12 @@
 #include "cprocess/topology.hpp"
 #include "test_util.hpp"
 
+#ifdef _OPENMP
+#  include <omp.h>
+#else
+static inline void omp_set_num_threads(int) {}
+#endif
+
 using namespace cp;
 
 int main() {
@@ -863,6 +869,58 @@ int main() {
     }
     std::printf("coarsen far-field: peak0=%.6e peak1=%.6e\n", peak0, peak1);
     CHECK_NEAR(peak1, peak0, 1e-6 * peak0);
+  }
+
+  // ---- PA-1: repair_quality candidate-edge collection is thread-count -----
+  // -------- independent (1 thread vs 4 threads gives bit-identical results)
+  {
+    auto build_sliver_mesh = []() {
+      Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 6, 6, 6);
+      const double h = 1.0 / 6.0;
+
+      MeshTopology topo;
+      topo.build(m);
+      const int nn = static_cast<int>(m.nodes.size());
+
+      int node = -1;
+      for (int i = 0; i < nn; ++i) {
+        if (!topo.node_boundary[i] && !topo.node_interface[i] &&
+            !topo.node_adj[i].empty()) { node = i; break; }
+      }
+      int best_nb = -1;
+      double best_len = 1e300;
+      for (int j : topo.node_adj[node]) {
+        const double len = norm(m.nodes[j] - m.nodes[node]);
+        if (len < best_len) { best_len = len; best_nb = j; }
+      }
+      const Vec3 dir = (1.0 / best_len) * (m.nodes[best_nb] - m.nodes[node]);
+      m.nodes[node] = m.nodes[node] + (0.95 * h) * dir;
+      m.finalize();
+      return m;
+    };
+
+    omp_set_num_threads(1);
+    Mesh m1 = build_sliver_mesh();
+    RepairResult rr1 = repair_quality(m1, 0.1);
+
+    omp_set_num_threads(4);
+    Mesh m4 = build_sliver_mesh();
+    RepairResult rr4 = repair_quality(m4, 0.1);
+    omp_set_num_threads(1);
+
+    std::printf("PA-1 repair_quality determinism: 1thr(n_split=%d n_flips=%d "
+                "n_smoothed=%d cells=%zu nodes=%zu) 4thr(n_split=%d n_flips=%d "
+                "n_smoothed=%d cells=%zu nodes=%zu)\n",
+                rr1.n_split, rr1.n_flips, rr1.n_smoothed, m1.cells.size(),
+                m1.nodes.size(), rr4.n_split, rr4.n_flips, rr4.n_smoothed,
+                m4.cells.size(), m4.nodes.size());
+
+    CHECK(rr1.n_split == rr4.n_split);
+    CHECK(rr1.n_flips == rr4.n_flips);
+    CHECK(rr1.n_smoothed == rr4.n_smoothed);
+    CHECK(m1.cells.size() == m4.cells.size());
+    CHECK(m1.nodes.size() == m4.nodes.size());
+    CHECK_NEAR(rr1.min_q_after, rr4.min_q_after, 1e-12);
   }
 
   std::printf("remesh tests passed\n");
