@@ -7,6 +7,10 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef CPROCESS_MPI
+#  include <mpi.h>
+#endif
+
 #ifdef _OPENMP
 #  include <omp.h>
 #else
@@ -461,6 +465,25 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   scatter_table();  // ensure table is built before spawning workers
 
   const long long nchunks = (p.ions + kChunk - 1) / kChunk;
+
+  // PA-5: MPI rank/size for chunk distribution. The library never calls
+  // MPI_Init — only the calling application (e.g. the cprocess CLI, guarded
+  // the same way in main.cpp) may do that, via mpirun. If MPI is not
+  // compiled in, or MPI_Init was never called, this degrades to the
+  // single-rank fallback (rank=0, nprocs=1) with the code path identical to
+  // the CPROCESS_MPI=OFF build.
+  int mpi_rank = 0, mpi_nprocs = 1;
+#ifdef CPROCESS_MPI
+  {
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (initialized) {
+      MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+      MPI_Comm_size(MPI_COMM_WORLD, &mpi_nprocs);
+    }
+  }
+#endif
+
   int nthreads;
   if (p.threads > 0) {
     nthreads = p.threads;
@@ -482,8 +505,13 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   // bit-identical for any number of threads (amorphous mode).
   // Channeling with live damage feedback is non-deterministic across thread
   // counts by design: scheduling affects the order in which damage accumulates.
+  // PA-5: chunks are distributed round-robin across MPI ranks
+  // (for (k = rank; k < nchunks; k += nprocs)); OpenMP parallelism remains
+  // fully active within each rank. Chunk seeds depend only on k, so the
+  // assignment scheme does not affect results (bit-identical to a
+  // single-rank run once hit arrays are Allreduce'd below).
 #pragma omp parallel for schedule(dynamic) num_threads(nthreads)
-  for (long long k = 0; k < nchunks; ++k) {
+  for (long long k = mpi_rank; k < nchunks; k += mpi_nprocs) {
     const int tid = omp_get_thread_num();
     std::vector<std::uint32_t>& h = hits[tid];
     Rng rng(splitmix64(p.seed ^ (0x9E3779B97F4A7C15ull*(k+1))));
@@ -509,14 +537,62 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   }
 
   // Sequential reduction (fixed order preserves floating-point for dsum/d2sum).
+  // Ranks other than the owning rank contribute zero-initialized ChunkStat
+  // entries for chunks they did not process (round-robin above), so this
+  // per-rank local sum only covers this rank's share of the work.
   McImplantStats st;
+  long long l_dep=0, l_back=0, l_trans=0, l_ood=0, l_mask=0, l_unb=0;
   double dsum=0, d2sum=0;
   for (const auto& s : cs) {
-    st.deposited     += s.dep;  st.backscattered += s.back;
-    st.transmitted   += s.trans; st.out_of_domain += s.ood;
-    st.in_mask       += s.mask;  st.unbinned      += s.unb;
+    l_dep += s.dep;  l_back += s.back;
+    l_trans += s.trans; l_ood += s.ood;
+    l_mask += s.mask;  l_unb += s.unb;
     dsum += s.dsum; d2sum += s.d2sum;
   }
+
+  // Combine this rank's per-thread hit arrays into a single per-cell array
+  // before the (optional) cross-rank Allreduce.
+  std::vector<std::uint64_t> hits_total(nc, 0);
+  for (int i = 0; i < nc; ++i) {
+    std::uint64_t total = 0;
+    for (int t = 0; t < nthreads; ++t) total += hits[t][i];
+    hits_total[i] = total;
+  }
+
+#ifdef CPROCESS_MPI
+  if (mpi_nprocs > 1) {
+    // Integer hit counts sum order-independently -> exact match with a
+    // single-rank run. dsum/d2sum are floating point and Allreduce may
+    // combine them in a different order across ranks/runs, so Rp/dRp can
+    // differ from a single-rank run in the last bit(s) (documented in the
+    // PA-5 spec); the deposited/backscattered/... integer counters and the
+    // hit array remain bit-exact.
+    MPI_Allreduce(MPI_IN_PLACE, hits_total.data(), nc, MPI_UINT64_T, MPI_SUM,
+                  MPI_COMM_WORLD);
+
+    long long counters[6] = {l_dep, l_back, l_trans, l_ood, l_mask, l_unb};
+    MPI_Allreduce(MPI_IN_PLACE, counters, 6, MPI_LONG_LONG, MPI_SUM,
+                  MPI_COMM_WORLD);
+    l_dep = counters[0]; l_back = counters[1]; l_trans = counters[2];
+    l_ood = counters[3]; l_mask = counters[4]; l_unb  = counters[5];
+
+    double dsums[2] = {dsum, d2sum};
+    MPI_Allreduce(MPI_IN_PLACE, dsums, 2, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+    dsum = dsums[0]; d2sum = dsums[1];
+
+    // Damage array: only exact when channeling is disabled (no cross-rank
+    // damage feedback during transport, per the PA-5 spec).
+    if (p.channeling) {
+      MPI_Allreduce(MPI_IN_PLACE, dmg_store.counts.data(), nc,
+                    MPI_UINT32_T, MPI_SUM, MPI_COMM_WORLD);
+    }
+  }
+#endif
+
+  st.deposited     = l_dep;  st.backscattered = l_back;
+  st.transmitted   = l_trans; st.out_of_domain = l_ood;
+  st.in_mask       = l_mask;  st.unbinned      = l_unb;
   if (st.deposited > 0) {
     st.rp  = dsum / st.deposited;
     st.drp = std::sqrt(std::max(0.0, d2sum/st.deposited - st.rp*st.rp));
@@ -524,9 +600,8 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
 
   st.weight = weight;
   for (int i = 0; i < nc; ++i) {
-    std::uint64_t total = 0;
-    for (int t = 0; t < nthreads; ++t) total += hits[t][i];
-    if (total > 0) conc[i] += total * st.weight / mesh.cell_vol[i];
+    if (hits_total[i] > 0)
+      conc[i] += hits_total[i] * st.weight / mesh.cell_vol[i];
   }
 
   // Optionally expose damage profile (displaced-atom density [cm^-3]).

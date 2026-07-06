@@ -535,4 +535,223 @@ RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
   return res;
 }
 
+CoarsenResult coarsen(Mesh& m, const std::vector<std::pair<int, int>>& edges,
+                      std::vector<std::vector<double>*>* fields) {
+  CoarsenResult res;
+  const int nc0 = static_cast<int>(m.cells.size());
+  if (nc0 == 0) return res;
+
+  MeshTopology topo;
+  topo.build(m);
+  const std::vector<double> vol0 = m.cell_vol;
+  std::vector<double> cur_vol = vol0;
+
+  std::vector<char> cell_touched(nc0, 0);
+  std::vector<char> cell_dead(nc0, 0);
+
+  for (const auto& [a, b] : edges) {
+    if (topo.node_boundary[a] || topo.node_boundary[b] ||
+        topo.node_interface[a] || topo.node_interface[b]) {
+      ++res.n_rejected;
+      continue;
+    }
+
+    const std::vector<int>& inc = topo.edge_incident(a, b);
+    if (inc.empty()) { ++res.n_rejected; continue; }
+
+    const std::vector<int>& bcells = topo.node_cells[b];
+
+    bool conflict = false;
+    for (int ci : inc) if (cell_touched[ci]) { conflict = true; break; }
+    if (!conflict)
+      for (int ci : bcells) if (cell_touched[ci]) { conflict = true; break; }
+    if (conflict) { ++res.n_rejected; continue; }
+
+    const std::set<int> inc_set(inc.begin(), inc.end());
+
+    // Simulate: cells in inc_set vanish; the rest of bcells reconnect b->a.
+    std::vector<int> del_cells;
+    std::vector<int> repl_cells;
+    std::vector<std::array<int, 4>> repl_conn;
+    std::vector<double> repl_vol;
+    bool ok = true;
+    for (int ci : bcells) {
+      if (inc_set.count(ci)) { del_cells.push_back(ci); continue; }
+      std::array<int, 4> c = m.cells[ci];
+      for (auto& v : c) if (v == b) v = a;
+      const double v = signed_vol(m.nodes[c[0]], m.nodes[c[1]], m.nodes[c[2]], m.nodes[c[3]]);
+      if (v <= 0) { ok = false; break; }
+      const double q = tet_quality(m.nodes[c[0]], m.nodes[c[1]], m.nodes[c[2]], m.nodes[c[3]]);
+      if (q < 0.05) { ok = false; break; }
+      repl_cells.push_back(ci);
+      repl_conn.push_back(c);
+      repl_vol.push_back(v);
+    }
+    if (!ok) { ++res.n_rejected; continue; }
+
+    // Accept.
+    for (int ci : del_cells) { cell_dead[ci] = 1; cell_touched[ci] = 1; }
+    for (int ci : repl_cells) cell_touched[ci] = 1;
+
+    if (fields) {
+      for (auto* vecp : *fields) {
+        if (!vecp) continue;
+        std::vector<double>& vec = *vecp;
+
+        // Rule 1: reconnected cells rescale to conserve their own mass.
+        for (std::size_t k = 0; k < repl_cells.size(); ++k) {
+          const int ci = repl_cells[k];
+          const double vnew = repl_vol[k];
+          vec[ci] = vec[ci] * vol0[ci] / vnew;
+        }
+
+        // Rule 2: each removed cell's mass is split across surviving cells
+        // sharing >= 3 nodes with it (post-collapse identification, b==a).
+        for (int dci : del_cells) {
+          const double mdel = vec[dci] * vol0[dci];
+          int x = -1, y = -1;
+          for (int v : m.cells[dci]) {
+            if (v != a && v != b) { if (x < 0) x = v; else y = v; }
+          }
+          std::vector<int> targets;
+          if (x >= 0 && y >= 0) {
+            std::set<int> xy_common;
+            for (int cx : topo.node_cells[x]) {
+              if (cx == dci || cell_dead[cx]) continue;
+              bool has_y = false;
+              for (int cy : topo.node_cells[y]) if (cy == cx) { has_y = true; break; }
+              if (!has_y) continue;
+              bool has_a_or_b = false;
+              for (int v : m.cells[cx]) if (v == a || v == b) { has_a_or_b = true; break; }
+              if (!has_a_or_b) continue;
+              xy_common.insert(cx);
+            }
+            targets.assign(xy_common.begin(), xy_common.end());
+          }
+          if (targets.empty()) targets = repl_cells;
+          if (targets.empty()) continue;  // should not happen per spec
+
+          const double share = mdel / static_cast<double>(targets.size());
+          for (int t : targets) vec[t] += share / cur_vol[t];
+        }
+      }
+    }
+
+    for (std::size_t k = 0; k < repl_cells.size(); ++k) {
+      const int ci = repl_cells[k];
+      m.cells[ci] = repl_conn[k];
+      cur_vol[ci] = repl_vol[k];
+    }
+
+    ++res.n_collapsed;
+  }
+
+  // Compact: drop dead cells from cells/cell_region/fields.
+  std::vector<std::array<int, 4>> new_cells;
+  std::vector<int> new_region;
+  new_cells.reserve(nc0);
+  new_region.reserve(nc0);
+  std::vector<int> new_index(nc0, -1);
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (cell_dead[ci]) continue;
+    new_index[ci] = static_cast<int>(new_cells.size());
+    new_cells.push_back(m.cells[ci]);
+    new_region.push_back(m.cell_region[ci]);
+  }
+  res.n_cells_removed = nc0 - static_cast<int>(new_cells.size());
+
+  if (fields) {
+    for (auto* vecp : *fields) {
+      if (!vecp) continue;
+      std::vector<double>& vec = *vecp;
+      std::vector<double> out(new_cells.size());
+      for (int ci = 0; ci < nc0; ++ci)
+        if (new_index[ci] >= 0) out[new_index[ci]] = vec[ci];
+      vec = std::move(out);
+    }
+  }
+
+  m.cells = std::move(new_cells);
+  m.cell_region = std::move(new_region);
+  m.finalize();
+  return res;
+}
+
+std::vector<std::pair<int, int>> select_coarsen_edges(
+    const Mesh& m, const std::vector<double>& conc, double rel_grad_thresh,
+    double max_fraction) {
+  MeshTopology topo;
+  topo.build(m);
+
+  double global_max = 0.0;
+  for (double v : conc) if (v > global_max) global_max = v;
+  const double floor_val = 1e-3 * global_max;
+
+  // A single face's gradient is not sufficient to tell whether a cell sits in
+  // a high-gradient band: for a profile that varies only along one axis (e.g.
+  // a depth-only Gaussian), faces normal to the other two axes are exactly
+  // flat (equal concentration) even for cells sitting right at the peak.
+  // Require every face of a cell to be low-gradient before any of that
+  // cell's edges become coarsening candidates -- this is what actually
+  // protects high-curvature bands regardless of the profile's orientation.
+  std::vector<char> cell_ok(m.cells.size(), 1);
+  for (const auto& f : m.faces) {
+    if (f.neigh < 0) continue;
+    const double c_o = conc[f.owner], c_n = conc[f.neigh];
+    const double thresh = rel_grad_thresh * std::max({c_o, c_n, floor_val});
+    if (std::fabs(c_o - c_n) >= thresh) {
+      cell_ok[f.owner] = 0;
+      cell_ok[f.neigh] = 0;
+    }
+  }
+
+  std::vector<std::pair<int, int>> candidates;
+  std::set<std::pair<int, int>> seen;
+  for (const auto& f : m.faces) {
+    if (f.neigh < 0) continue;
+    if (!cell_ok[f.owner] || !cell_ok[f.neigh]) continue;
+
+    const auto& c = m.cells[f.owner];
+    // Shortest edge of the owner cell.
+    double min_len2 = 1e300;
+    int min_e = -1;
+    for (int e = 0; e < 6; ++e) {
+      const int va = c[kEdges[e][0]], vb = c[kEdges[e][1]];
+      const Vec3 d = m.nodes[va] - m.nodes[vb];
+      const double len2 = dot(d, d);
+      if (len2 < min_len2) { min_len2 = len2; min_e = e; }
+    }
+    int a = c[kEdges[min_e][0]], b = c[kEdges[min_e][1]];
+    if (topo.node_boundary[a] || topo.node_boundary[b] ||
+        topo.node_interface[a] || topo.node_interface[b])
+      continue;
+    if (a > b) std::swap(a, b);
+    if (seen.insert({a, b}).second) candidates.push_back({a, b});
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [&](const std::pair<int, int>& p, const std::pair<int, int>& q) {
+              const Vec3 dp = m.nodes[p.first] - m.nodes[p.second];
+              const Vec3 dq = m.nodes[q.first] - m.nodes[q.second];
+              return dot(dp, dp) < dot(dq, dq);
+            });
+
+  const std::size_t cap =
+      static_cast<std::size_t>(topo.edge_cells.size() * max_fraction);
+
+  std::vector<std::pair<int, int>> out;
+  std::vector<char> cell_touched(m.cells.size(), 0);
+  for (const auto& [a, b] : candidates) {
+    if (out.size() >= cap) break;
+    const std::vector<int>& inc = topo.edge_incident(a, b);
+    if (inc.empty()) continue;
+    bool conflict = false;
+    for (int ci : inc) if (cell_touched[ci]) { conflict = true; break; }
+    if (conflict) continue;
+    for (int ci : inc) cell_touched[ci] = 1;
+    out.push_back({a, b});
+  }
+  return out;
+}
+
 }  // namespace cp

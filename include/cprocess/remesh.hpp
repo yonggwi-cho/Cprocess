@@ -132,4 +132,43 @@ RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
                              int key_index, double rel_grad_thresh,
                              int max_passes, double max_growth = 4.0);
 
+struct CoarsenResult {
+  int n_collapsed = 0;      // number of edge collapses actually applied
+  int n_rejected = 0;       // candidates rejected (protection/quality/inversion)
+  int n_cells_removed = 0;  // cells dropped from the mesh
+};
+
+// Collapses each edge (a,b) in `edges` by merging node b into node a (a stays
+// put). Boundary and region-interface nodes are never touched (an edge with
+// either endpoint protected is rejected). A candidate collapse is simulated
+// before being applied: cells incident to both a and b vanish (positive
+// volume sums to zero across an internal edge collapse); cells containing
+// only b are reconnected with b -> a. If any reconnected cell would end up
+// with non-positive signed volume or tet_quality < 0.05, the whole collapse
+// is rejected (this substitutes for a full topological link condition). If
+// `fields` is non-null, every listed per-cell field is transferred so that
+// total mass (Sum C*V) is conserved: reconnected cells are rescaled to keep
+// their own mass constant (C_new = C_old * V_old / V_new), and each removed
+// cell's mass is split evenly across the surviving cells that share at least
+// 3 nodes with it post-collapse (falling back to the collapse's reconnected
+// cells if none qualify). Calls Mesh::finalize() once at the end. Orphaned
+// nodes (b) are left in place, unreferenced; node array compaction is out of
+// scope for this function.
+CoarsenResult coarsen(Mesh& m, const std::vector<std::pair<int, int>>& edges,
+                      std::vector<std::vector<double>*>* fields = nullptr);
+
+// Selects edge-collapse candidates for `coarsen`. Scans every internal face;
+// a face is "low-gradient" when
+//   |C_owner - C_neigh| < rel_grad_thresh * max(C_owner, C_neigh, 1e-3*global_max)
+// where global_max is the max of `conc`. For each low-gradient face, the
+// owner cell's shortest edge is a candidate (deduplicated, both endpoints
+// required to be non-boundary and non-interface). Candidates are sorted by
+// length ascending and greedily accepted, skipping any whose incident cells
+// overlap an already-accepted candidate's incident cells (same conflict
+// avoidance as split_edges). At most
+// `edge_cells.size() * max_fraction` edges are returned.
+std::vector<std::pair<int, int>> select_coarsen_edges(
+    const Mesh& m, const std::vector<double>& conc, double rel_grad_thresh,
+    double max_fraction = 0.1);
+
 }  // namespace cp

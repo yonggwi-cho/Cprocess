@@ -586,6 +586,152 @@ int main() {
     CHECK_NEAR(mass1, mass0, 1e-9 * mass0);
   }
 
+  // ---- coarsen: uniform field collapse -------------------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 6, 6, 6);
+    const double vol0 = m.total_volume();
+    const int nc0 = static_cast<int>(m.cells.size());
+
+    std::vector<double> conc(m.cells.size(), 1e15);
+    double mass0 = 0;
+    for (std::size_t i = 0; i < conc.size(); ++i) mass0 += conc[i] * m.cell_vol[i];
+
+    std::vector<std::pair<int, int>> edges =
+        select_coarsen_edges(m, conc, 1e9, 0.2);
+    std::printf("coarsen uniform: candidate edges=%zu\n", edges.size());
+    CHECK(!edges.empty());
+
+    std::vector<std::vector<double>*> fields = {&conc};
+    CoarsenResult cr = coarsen(m, edges, &fields);
+    std::printf("coarsen uniform: n_collapsed=%d n_rejected=%d n_removed=%d cells %d -> %zu\n",
+               cr.n_collapsed, cr.n_rejected, cr.n_cells_removed, nc0, m.cells.size());
+    CHECK(cr.n_collapsed >= 1);
+    CHECK(cr.n_cells_removed > 0);
+    CHECK(static_cast<int>(m.cells.size()) == nc0 - cr.n_cells_removed);
+
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+
+    CHECK(conc.size() == m.cells.size());
+    double mass1 = 0;
+    for (std::size_t i = 0; i < conc.size(); ++i) mass1 += conc[i] * m.cell_vol[i];
+    CHECK_NEAR(mass1, mass0, 1e-9 * mass0);
+
+    CHECK(mesh_quality(m).min_q > 0.05);
+  }
+
+  // ---- select_coarsen_edges: gradient protection ---------------------------
+  {
+    const double um = 1e-4;
+    Mesh m = make_box_mesh(0, 0.4 * um, 0, 0.4 * um, 0, 0.8 * um, 6, 6, 24);
+    const double z_top = 0.8 * um;
+    const double rp = 0.1 * um, drp = 0.02 * um;
+
+    std::vector<double> B(m.cells.size());
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double z = m.cell_cent[i].z;
+      const double dz = (z_top - z) - rp;
+      B[i] = 1e19 * std::exp(-(dz * dz) / (2 * drp * drp));
+    }
+
+    std::vector<std::pair<int, int>> edges = select_coarsen_edges(m, B, 0.1, 0.2);
+    std::printf("coarsen gradient protection: edges=%zu\n", edges.size());
+    CHECK(!edges.empty());
+
+    for (const auto& [a, b] : edges) {
+      const double depth_a = z_top - m.nodes[a].z;
+      const double depth_b = z_top - m.nodes[b].z;
+      CHECK(std::fabs(depth_a - rp) > 3 * drp);
+      CHECK(std::fabs(depth_b - rp) > 3 * drp);
+    }
+  }
+
+  // ---- coarsen: boundary edges are all rejected ----------------------------
+  {
+    Mesh m = make_box_mesh(0, 1, 0, 1, 0, 1, 4, 4, 4);
+    const double vol0 = m.total_volume();
+    const std::size_t nc0 = m.cells.size();
+
+    MeshTopology topo;
+    topo.build(m);
+    std::vector<std::pair<int, int>> bnd_edges;
+    for (const auto& [key, cells] : topo.edge_cells) {
+      (void)cells;
+      const int a = static_cast<int>(key >> 32);
+      const int b = static_cast<int>(key & 0xffffffffu);
+      if (topo.node_boundary[a] && topo.node_boundary[b])
+        bnd_edges.push_back({a, b});
+    }
+    CHECK(!bnd_edges.empty());
+
+    CoarsenResult cr = coarsen(m, bnd_edges);
+    std::printf("coarsen boundary: candidates=%zu n_collapsed=%d n_rejected=%d\n",
+               bnd_edges.size(), cr.n_collapsed, cr.n_rejected);
+    CHECK(cr.n_collapsed == 0);
+    CHECK(cr.n_rejected == static_cast<int>(bnd_edges.size()));
+    CHECK(m.cells.size() == nc0);
+    CHECK_NEAR(m.total_volume(), vol0, 1e-12 * vol0);
+  }
+
+  // ---- coarsen: non-uniform field mass conservation and peak protection ----
+  {
+    const double um = 1e-4;
+    Mesh m = make_box_mesh(0, 0.4 * um, 0, 0.4 * um, 0, 0.8 * um, 6, 6, 24);
+    const double z_top = 0.8 * um;
+    const double rp = 0.1 * um, drp = 0.02 * um;
+
+    std::vector<double> B(m.cells.size());
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double z = m.cell_cent[i].z;
+      const double dz = (z_top - z) - rp;
+      B[i] = 1e19 * std::exp(-(dz * dz) / (2 * drp * drp));
+    }
+    double mass0 = 0;
+    for (std::size_t i = 0; i < B.size(); ++i) mass0 += B[i] * m.cell_vol[i];
+
+    double peak0 = 0;
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double depth = z_top - m.cell_cent[i].z;
+      if (std::fabs(depth - rp) <= 2 * drp) peak0 = std::max(peak0, B[i]);
+    }
+
+    // Far-field edges only: both endpoints outside the Rp+-3dRp band.
+    MeshTopology topo;
+    topo.build(m);
+    std::vector<std::pair<int, int>> far_edges;
+    for (const auto& [key, cells] : topo.edge_cells) {
+      (void)cells;
+      const int a = static_cast<int>(key >> 32);
+      const int b = static_cast<int>(key & 0xffffffffu);
+      if (topo.node_boundary[a] || topo.node_boundary[b] ||
+          topo.node_interface[a] || topo.node_interface[b]) continue;
+      const double depth_a = z_top - m.nodes[a].z;
+      const double depth_b = z_top - m.nodes[b].z;
+      if (std::fabs(depth_a - rp) <= 3 * drp || std::fabs(depth_b - rp) <= 3 * drp)
+        continue;
+      far_edges.push_back({a, b});
+      if (far_edges.size() >= 20) break;
+    }
+    CHECK(far_edges.size() >= 20);
+
+    std::vector<std::vector<double>*> fields = {&B};
+    CoarsenResult cr = coarsen(m, far_edges, &fields);
+    std::printf("coarsen far-field: n_collapsed=%d n_rejected=%d\n", cr.n_collapsed,
+               cr.n_rejected);
+    CHECK(cr.n_collapsed >= 1);
+
+    double mass1 = 0;
+    for (std::size_t i = 0; i < B.size(); ++i) mass1 += B[i] * m.cell_vol[i];
+    CHECK_NEAR(mass1, mass0, 1e-9 * mass0);
+
+    double peak1 = 0;
+    for (std::size_t i = 0; i < m.cells.size(); ++i) {
+      const double depth = z_top - m.cell_cent[i].z;
+      if (std::fabs(depth - rp) <= 2 * drp) peak1 = std::max(peak1, B[i]);
+    }
+    std::printf("coarsen far-field: peak0=%.6e peak1=%.6e\n", peak0, peak1);
+    CHECK_NEAR(peak1, peak0, 1e-6 * peak0);
+  }
+
   std::printf("remesh tests passed\n");
   return 0;
 }

@@ -45,6 +45,19 @@ struct ILU0 {
 SolveResult cg_jacobi(const CSR& A, const std::vector<double>& b,
                       std::vector<double>& x, double rtol, int maxit);
 
+#ifdef CPROCESS_GPU
+// GPU (OpenMP target offload) Jacobi-preconditioned CG. Numerically
+// equivalent to cg_jacobi (same algorithm), but SpMV/AXPY/dot/Jacobi
+// kernels execute on the offload device; the iteration itself stays on
+// the host (only reduction scalars are transferred back per iteration).
+// Falls back to host execution when no offload device is present
+// (omp_get_num_devices() == 0), so it is safe to call in CPU-only
+// development environments as long as CPROCESS_GPU was enabled at
+// configure time. Not declared at all when CPROCESS_GPU is undefined.
+SolveResult cg_jacobi_gpu(const CSR& A, const std::vector<double>& b,
+                          std::vector<double>& x, double rtol, int maxit);
+#endif
+
 // Jacobi-preconditioned BiCGSTAB (fallback for non-symmetric systems).
 SolveResult bicgstab_jacobi(const CSR& A, const std::vector<double>& b,
                             std::vector<double>& x, double rtol, int maxit);
@@ -63,6 +76,27 @@ SolveResult cg_ilu0(const CSR& A, const std::vector<double>& b,
 SolveResult bicgstab_ilu0(const CSR& A, const std::vector<double>& b,
                           std::vector<double>& x, double rtol, int maxit);
 
+// Smoothed-aggregation AMG, two-level V-cycle. Usable as a Precond for
+// the existing cg/bicgstab cores.
+struct AMG {
+  void setup(const CSR& A);   // build aggregates, P, R=P^T, Ac
+  void apply(const std::vector<double>& r, std::vector<double>& z) const;
+  int n_aggregates() const { return nagg_; }
+
+ private:
+  CSR A_;          // fine matrix (copy)
+  CSR P_, R_;      // prolongation (n x nagg) and restriction (= P^T)
+  CSR Ac_;         // coarse matrix R A P (nagg x nagg)
+  std::vector<double> dinv_;       // fine 1/a_ii for the Jacobi smoother
+  std::vector<double> coarse_lu_;  // dense LU of Ac when nagg < 200
+  std::vector<int> coarse_piv_;
+  bool coarse_dense_ = false;
+  int nagg_ = 0;
+};
+
+SolveResult cg_amg(const CSR& A, const std::vector<double>& b,
+                   std::vector<double>& x, double rtol, int maxit);
+
 // Generic cores taking an explicit preconditioner (M^{-1} apply).
 SolveResult cg(const CSR& A, const std::vector<double>& b,
                std::vector<double>& x, double rtol, int maxit,
@@ -70,5 +104,26 @@ SolveResult cg(const CSR& A, const std::vector<double>& b,
 SolveResult bicgstab(const CSR& A, const std::vector<double>& b,
                      std::vector<double>& x, double rtol, int maxit,
                      const Precond& psolve);
+
+// Block CSR: square block matrix of n block-rows; each stored entry is a
+// dense nb x nb block (row-major). val.size() == ptr[n] * nb * nb.
+struct BCSR {
+  int n = 0;    // block rows
+  int nb = 0;   // block size (number of coupled species)
+  std::vector<int> ptr;      // size n+1 (block entries)
+  std::vector<int> col;      // size nnz_blocks, sorted within a row
+  std::vector<double> val;   // nnz_blocks * nb*nb, block k at val[k*nb*nb]
+
+  // y <- A x, with x/y of length n*nb (cell-major: x[i*nb + s]).
+  void mul(const std::vector<double>& x, std::vector<double>& y) const;
+  int find(int row, int c) const;  // block slot index, -1 if absent
+};
+
+// Builds a BCSR sharing the sparsity pattern of a scalar CSR (val zeroed).
+BCSR bcsr_from_pattern(const CSR& scalar_pattern, int nb);
+
+// Block-Jacobi preconditioned BiCGSTAB on a BCSR system.
+SolveResult bicgstab_bjacobi(const BCSR& A, const std::vector<double>& b,
+                             std::vector<double>& x, double rtol, int maxit);
 
 }  // namespace cp
