@@ -589,14 +589,18 @@ PYBIND11_MODULE(_cprocess, m) {
       "Maxwell relaxation. temp in K, dt in s. Returns a log string.");
 
   m.def("proc_refine",
-      [](SimState& st, const std::string& species, double thresh, int passes) {
+      [](SimState& st, const std::string& species, double thresh, int passes,
+         const std::string& axis) {
         std::ostringstream log;
-        proc::refine(st, species, thresh, passes, &log);
+        proc::refine(st, species, thresh, passes, axis, &log);
         return log.str();
       },
       py::arg("state"), py::arg("species"),
       py::arg("threshold") = 0.5, py::arg("passes") = 2,
-      "Adaptively split mesh edges where `species` has steep gradients.\n"
+      py::arg("axis") = std::string(""),
+      "Adaptively split mesh edges where `species` has steep gradients "
+      "(axis=\"\", default), or direction-aligned edges when axis is "
+      "\"x\"/\"y\"/\"z\" (M-6, layered directional refinement).\n"
       "Returns a log string.");
 
   m.def("proc_strip",

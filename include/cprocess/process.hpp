@@ -214,8 +214,16 @@ void mechanics(SimState& st, double temp_k, double dt_s,
 // pybind/Python layer). max_passes: split-pass cap (default 2). Every field
 // in st.fields (species included) is carried through the splits by exact
 // parent-cell copy; the stack mesh (during photo) is never touched.
+// axis (M-6): "" (default) keeps the M-2 gradient-driven behavior exactly.
+// "x"|"y"|"z" switches to direction-aligned refinement (refine_anisotropic):
+// the gradient indicator is not used, `direction` is the corresponding unit
+// axis, and `rel_grad_thresh` is reused as align_thresh (0.5 is a sane
+// default for both). `species` is only used to confirm the field exists (for
+// field-transfer bookkeeping), not to drive the indicator. Any other axis
+// value throws std::runtime_error.
 void refine(SimState& st, const std::string& species, double rel_grad_thresh,
-           int max_passes, std::ostream* log = nullptr);
+           int max_passes, const std::string& axis = "",
+           std::ostream* log = nullptr);
 
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 

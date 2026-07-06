@@ -2077,7 +2077,7 @@ void mechanics(SimState& st, double temp_k, double dt_s, std::ostream* log) {
 }
 
 void refine(SimState& st, const std::string& species, double rel_grad_thresh,
-           int max_passes, std::ostream* log) {
+           int max_passes, const std::string& axis, std::ostream* log) {
   need_mesh(st);
   auto it = st.fields.find(species);
   if (it == st.fields.end() || it->second.empty())
@@ -2092,8 +2092,19 @@ void refine(SimState& st, const std::string& species, double rel_grad_thresh,
   }
 
   const int nc0 = static_cast<int>(st.mesh.cells.size());
-  RefineResult rr = refine_gradient(st.mesh, field_ptrs, key_index,
-                                    rel_grad_thresh, max_passes);
+  RefineResult rr;
+  if (axis.empty()) {
+    rr = refine_gradient(st.mesh, field_ptrs, key_index, rel_grad_thresh,
+                         max_passes);
+  } else {
+    Vec3 direction;
+    if (axis == "x") direction = {1, 0, 0};
+    else if (axis == "y") direction = {0, 1, 0};
+    else if (axis == "z") direction = {0, 0, 1};
+    else throw std::runtime_error("refine: unknown axis '" + axis + "'");
+    rr = refine_anisotropic(st.mesh, direction, &field_ptrs, rel_grad_thresh,
+                            max_passes);
+  }
 
   if (log)
     *log << "[refine] " << species << " passes=" << rr.n_passes

@@ -535,6 +535,105 @@ RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
   return res;
 }
 
+RefineResult refine_anisotropic(Mesh& m, const Vec3& direction,
+                                std::vector<std::vector<double>*>* fields,
+                                double align_thresh, int max_passes,
+                                double max_growth) {
+  const double dlen = norm(direction);
+  if (dlen <= 0) throw std::invalid_argument("refine_anisotropic: direction is zero");
+  const Vec3 d_hat = (1.0 / dlen) * direction;
+
+  RefineResult res;
+  res.n_cells_before = static_cast<int>(m.cells.size());
+  const int max_cells = static_cast<int>(res.n_cells_before * max_growth);
+
+  for (int pass = 0; pass < max_passes; ++pass) {
+    if (static_cast<int>(m.cells.size()) >= max_cells) break;
+
+    MeshTopology topo;
+    topo.build(m);
+
+    // Enumerate every edge once (decode a<b from the packed key) and score it.
+    struct Scored { int a, b; double score, len; bool aligned; };
+    std::vector<Scored> all_edges;
+    all_edges.reserve(topo.edge_cells.size());
+    for (const auto& [key, cells] : topo.edge_cells) {
+      if (cells.empty()) continue;
+      const int a = static_cast<int>(key >> 32);
+      const int b = static_cast<int>(key & 0xffffffffu);
+      const Vec3 d = m.nodes[b] - m.nodes[a];
+      const double len = norm(d);
+      if (len <= 0) continue;
+      const double align = std::fabs(dot((1.0 / len) * d, d_hat));
+      all_edges.push_back({a, b, align * len, len, align > 0.9});
+    }
+
+    double sum_aligned = 0.0; int n_aligned = 0;
+    double sum_all = 0.0;
+    for (const auto& e : all_edges) {
+      sum_all += e.len;
+      if (e.aligned) { sum_aligned += e.len; ++n_aligned; }
+    }
+    const double L_ref = n_aligned > 0 ? sum_aligned / n_aligned
+                        : (all_edges.empty() ? 0.0 : sum_all / all_edges.size());
+
+    // Measured deviation from the literal spec formula: score =
+    // |dot(e_hat,d_hat)| * len(e) is algebraically just dot(e, d_hat), the
+    // signed projection of the edge vector onto `direction`. On a
+    // Kuhn-triangulated box mesh (make_box_mesh) every "one layer tall" edge
+    // -- the pure z edge, the xz/yz face diagonals, and the tet's main
+    // diagonal -- spans exactly one cell height along z, so they all get the
+    // *same* score (measured: dot=1.0/len=h, dot=0.707/len=1.414h, and
+    // dot=0.577/len=1.732h all give score=h). Using score alone as the
+    // candidate gate therefore lets ~2.4x as many diagonal edges in as pure
+    // z edges (measured candidates on a 6x6x6 unit box: 294 z-aligned vs 720
+    // diagonal/main-diagonal, all scoring equally), and splitting those
+    // diagonals injects lateral structure -- the opposite of what
+    // direction-aligned refinement is for. We therefore additionally gate
+    // candidacy on the same alignment cutoff (|dot| > 0.9) used to define
+    // L_ref's "direction-aligned" population; score > align_thresh * L_ref
+    // still governs which of those aligned edges are long enough to split.
+    std::vector<Scored> candidates;
+    for (const auto& e : all_edges)
+      if (e.aligned && e.score > align_thresh * L_ref) candidates.push_back(e);
+    if (candidates.empty()) break;
+
+    // score descending (longest, most-aligned first).
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Scored& x, const Scored& y) { return x.score > y.score; });
+
+    std::vector<std::pair<int, int>> edge_list;
+    edge_list.reserve(candidates.size());
+    for (const auto& e : candidates) edge_list.push_back({e.a, e.b});
+
+    // Same growth-capped, one-at-a-time application as refine_gradient.
+    for (const auto& edge : edge_list) {
+      if (static_cast<int>(m.cells.size()) >= max_cells) break;
+
+      MeshTopology etopo;
+      etopo.build(m);
+      const std::size_t inc = etopo.edge_incident(edge.first, edge.second).size();
+      if (inc == 0) continue;
+      if (static_cast<int>(m.cells.size() + inc) > max_cells) continue;
+
+      SplitResult sr = split_edges(m, {edge});
+      res.n_split_total += sr.n_split;
+
+      if (fields)
+        for (auto* vecp : *fields) {
+          if (!vecp) continue;
+          *vecp = redistribute_field(*vecp, sr.cell_parent);
+        }
+    }
+    ++res.n_passes;
+
+    if (static_cast<int>(m.cells.size()) >= max_cells) break;
+  }
+
+  res.n_cells_after = static_cast<int>(m.cells.size());
+  return res;
+}
+
 CoarsenResult coarsen(Mesh& m, const std::vector<std::pair<int, int>>& edges,
                       std::vector<std::vector<double>*>* fields) {
   CoarsenResult res;

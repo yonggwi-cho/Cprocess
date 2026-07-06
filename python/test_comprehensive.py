@@ -934,6 +934,24 @@ def test_refine_python():
     check(len(sim.field("B")) == n1, "field resized to new mesh")
 
 
+def test_refine_anisotropic_python():
+    """Simulation.refine(axis='z') (M-6) grows cell count via directional
+    (depth) refinement while conserving dose, returning self for chaining."""
+    print("test_refine_anisotropic_python")
+    sim = cp.Simulation()
+    sim.mesh(1, 1, 1, 6, 6, 6)
+    sim.init("B", 1e15)
+    n0 = sim.n_cells
+    d0 = sim.dose("B")
+    ret = sim.refine("B", passes=2, axis="z")
+    n1 = sim.n_cells
+    d1 = sim.dose("B")
+    print(f"  cells {n0} -> {n1}, dose {d0:.4e} -> {d1:.4e}")
+    check(ret is sim, "refine(axis='z') returns self for chaining")
+    check(n1 > n0, "refine(axis='z') increased cell count")
+    check(abs(d1 - d0) / d0 < 1e-9, "refine(axis='z') conserves dose")
+
+
 def test_etch_depo_p17():
     """P1-7: multi-layer deposit + blanket true-removal etch + material
     selectivity + polygon etch (legacy retag) + dose conservation."""
@@ -1228,6 +1246,7 @@ if __name__ == "__main__":
     test_pearson_python()
     test_params_python()
     test_refine_python()
+    test_refine_anisotropic_python()
     test_etch_depo_p17()
     test_topo_p25()
     test_save_load_state_python()

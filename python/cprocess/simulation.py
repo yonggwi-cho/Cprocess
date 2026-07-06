@@ -335,15 +335,22 @@ class Simulation:
         return self
 
     def refine(self, species: str, threshold: float = 0.5,
-              passes: int = 2) -> "Simulation":
+              passes: int = 2, axis: str = "") -> "Simulation":
         """Adaptively split mesh edges where `species` has steep gradients.
 
         `threshold` is a dimensionless relative concentration-difference
         threshold across a face (no unit conversion). `passes` caps the
         number of split rounds.
+
+        `axis` (M-6): default "" keeps the gradient-driven behavior above.
+        axis='z' (or 'x'/'y') switches to direction-aligned refinement,
+        splitting only edges aligned with that axis -- e.g. axis='z' gives
+        layered vertical (depth) resolution without adding lateral cells.
+        `threshold` is then reused as the alignment threshold. No unit
+        conversion.
         """
         self._emit(_c.proc_refine(self._st, species, float(threshold),
-                                  int(passes)))
+                                  int(passes), str(axis)))
         return self
 
     # -- diffusion -------------------------------------------------------------

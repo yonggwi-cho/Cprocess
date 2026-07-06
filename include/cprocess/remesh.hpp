@@ -132,6 +132,40 @@ RefineResult refine_gradient(Mesh& m, std::vector<std::vector<double>*>& fields,
                              int key_index, double rel_grad_thresh,
                              int max_passes, double max_growth = 4.0);
 
+// Direction-aligned (anisotropic) refinement (M-6). Same pass structure as
+// refine_gradient (M-2) -- fields carried through by parent-cell copy,
+// max_growth caps total cell count -- but the edge indicator is alignment
+// with `direction` times edge length rather than a field gradient:
+//   score(edge) = |dot(e_hat, d_hat)| * len(edge)
+// (e_hat: unit edge vector, d_hat: direction normalized). An edge is a split
+// candidate when score > align_thresh * L_ref, where L_ref is the mean
+// length of "direction-aligned" edges in the current mesh (|dot(e_hat,d_hat)|
+// > 0.9), falling back to the mean length of all edges if none qualify.
+// Candidates are additionally required to satisfy |dot(e_hat,d_hat)| > 0.9
+// (the same cutoff used to define L_ref's aligned population) before
+// being sorted by score descending (longest, most-aligned first) and handed
+// to split_edges (conflict skips are that function's responsibility, same as
+// M-2). Measured deviation from a literal reading of the spec: score alone
+// is algebraically just dot(e, d_hat) (the edge vector's projection onto
+// direction), so on a Kuhn-triangulated box mesh every one-layer-tall edge --
+// pure axis edges as well as face/main diagonals that also span one cell in
+// the aligned direction -- scores identically; without the extra alignment
+// gate, splitting would inject as much lateral (off-axis) structure as
+// intended depth resolution (measured on a 6x6x6 unit box: 720 diagonal
+// candidates vs. 294 true z-aligned ones, scoring equal). Throws
+// std::invalid_argument if |direction| <= 0.
+//
+// Note: a midpoint split halves an edge's length, so after a few passes a
+// once-aligned edge's score falls below align_thresh * L_ref (L_ref itself
+// shrinks pass to pass as the aligned population gets shorter) and
+// refinement self-terminates -- this is the mechanism that thins layers
+// along `direction` without a separate stopping heuristic. max_passes is
+// therefore the practical depth control.
+RefineResult refine_anisotropic(Mesh& m, const Vec3& direction,
+                                std::vector<std::vector<double>*>* fields,
+                                double align_thresh, int max_passes,
+                                double max_growth = 4.0);
+
 struct CoarsenResult {
   int n_collapsed = 0;      // number of edge collapses actually applied
   int n_rejected = 0;       // candidates rejected (protection/quality/inversion)
