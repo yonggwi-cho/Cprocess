@@ -31,6 +31,20 @@ struct DiffuseOpts {
   int verbosity = 1;       // 0 silent, 1 per-step lines
   bool activation = true;  // clamp charge neutrality at solid solubility (P1-3)
 
+  // S-3: per-step nonlinear solve. false (default) = Picard iteration over
+  // the concentration-dependent diffusivity, exactly as before. true =
+  // Jacobian-free Newton-Krylov (JFNK) per species instead of a single
+  // linear solve, still nested inside the existing species-coupling
+  // (nni) Picard loop. Fully backward compatible: when false, run()'s code
+  // path is byte-identical to pre-S-3 behavior.
+  bool use_newton = false;
+  double newton_rtol = 1e-8;  // Newton stop: ||F|| < newton_rtol * ||F0||
+  // If non-null, incremented by the total nonlinear-iteration count (summed
+  // over every time step) once run() returns: Picard passes reached when
+  // use_newton is false, or total per-species Newton iterations when true.
+  // Diagnostic only; never read by run() itself.
+  int* nl_iters = nullptr;
+
   // Piecewise-linear temperature profile {time_s from step start, temp_K}.
   // Empty = isothermal at `temp`. Must be sorted, start at t=0, size >= 2.
   // Beyond the last breakpoint the last temperature is held.
@@ -153,6 +167,16 @@ class DiffusionSolver {
                 const std::vector<double>& cgrad, double dt, double reaction,
                 bool nonortho, const SegTable& seg,
                 std::vector<double>& rhs, std::vector<Vec3>& grad);
+
+  // S-3: F(c) = A(dcell_c) * c - rhs(dcell_c, cold, c) for one backward-Euler
+  // step, evaluated via assemble() (which overwrites A_/rhs as a side
+  // effect -- callers that need a frozen preconditioner factor it from A_
+  // right after calling this with the base point c0).
+  void residual(const std::vector<double>& dcell_c,
+                const std::vector<double>& cold,
+                const std::vector<double>& bcface,
+                const std::vector<double>& c, double dt, bool nonortho,
+                const SegTable& seg, std::vector<double>& F);
 
   const Mesh& mesh_;
   std::vector<char> mask_;

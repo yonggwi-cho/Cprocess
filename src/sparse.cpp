@@ -871,11 +871,10 @@ SolveResult bicgstab_ilu0(const CSR& A, const std::vector<double>& b,
 //   c[j],s[j]: Givens rotation applied at step j
 //   g[j]     : RHS of the projected least-squares problem (rotated)
 // ---------------------------------------------------------------------------
-SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
-                         std::vector<double>& x, double rtol, int maxit,
-                         int restart) {
+SolveResult gmres_op(const LinOp& aop, int n, const std::vector<double>& b,
+                     std::vector<double>& x, double rtol, int maxit,
+                     int restart, const Precond& psolve) {
   SolveResult res;
-  const int n = A.n;
   x.resize(n, 0.0);
   const double bnorm = std::sqrt(dotv(b, b));
   if (bnorm == 0.0) {
@@ -884,12 +883,11 @@ SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
     return res;
   }
 
-  const std::vector<double> M = inv_diag(A);
   std::vector<double> r(n), t(n);
 
   for (int total = 0; total < maxit; ) {
     // r = b - A*x (true residual at restart boundary)
-    A.mul(x, t);
+    aop(x, t);
 #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; ++i) r[i] = b[i] - t[i];
     const double beta = std::sqrt(dotv(r, r));
@@ -912,9 +910,8 @@ SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
     double hnext = 0.0;
     for (; m < rs && total < maxit; ++m, ++total) {
       // w = A * M^{-1} * V[m]  (right-preconditioned matrix-vector product)
-#pragma omp parallel for schedule(static)
-      for (int i = 0; i < n; ++i) t[i] = M[i] * V[m][i];
-      A.mul(t, r);  // r = w
+      psolve(V[m], t);
+      aop(t, r);  // r = w
 
       // Modified Gram-Schmidt: orthogonalize w against V[0..m]
       for (int j = 0; j <= m; ++j) {
@@ -962,24 +959,44 @@ SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
     }
 
     // Update x: x += M^{-1} * (V_m * y)  (undo right preconditioning)
+    std::vector<double> vy(n, 0.0);
 #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; ++i) {
       double acc = 0.0;
       for (int j = 0; j < m; ++j) acc += V[j][i] * y[j];
-      x[i] += M[i] * acc;
+      vy[i] = acc;
     }
+    psolve(vy, t);
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < n; ++i) x[i] += t[i];
 
     if (res.resid <= rtol) { res.converged = true; return res; }
     if (hnext < 1e-12) break;  // exact solution found mid-restart
   }
 
   // Recompute true residual after final update
-  A.mul(x, t);
+  aop(x, t);
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < n; ++i) r[i] = b[i] - t[i];
   res.resid = std::sqrt(dotv(r, r)) / bnorm;
   res.converged = (res.resid <= rtol);
   return res;
+}
+
+SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
+                         std::vector<double>& x, double rtol, int maxit,
+                         int restart) {
+  const std::vector<double> M = inv_diag(A);
+  LinOp aop = [&](const std::vector<double>& in, std::vector<double>& out) {
+    A.mul(in, out);
+  };
+  Precond psolve = [&](const std::vector<double>& in, std::vector<double>& out) {
+    const int n = A.n;
+    out.resize(n);
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < n; ++i) out[i] = M[i] * in[i];
+  };
+  return gmres_op(aop, A.n, b, x, rtol, maxit, restart, psolve);
 }
 
 // ---------------------------------------------------------------------------

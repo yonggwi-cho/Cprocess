@@ -412,6 +412,27 @@ void DiffusionSolver::assemble(const std::vector<double>& dcell,
   }
 }
 
+// S-3: F(c) = A(dcell_c)*c - rhs(dcell_c, cold, c). assemble() rebuilds A_
+// and its rhs argument from `c` (via the deferred non-orthogonal gradient
+// correction, which is a linear functional of `c`); the caller may reuse the
+// A_ left behind (e.g. to (re)factor an ILU0 preconditioner at the Newton
+// base point) since assemble() always overwrites it in full.
+void DiffusionSolver::residual(const std::vector<double>& dcell_c,
+                               const std::vector<double>& cold,
+                               const std::vector<double>& bcface,
+                               const std::vector<double>& c, double dt,
+                               bool nonortho, const SegTable& seg,
+                               std::vector<double>& F) {
+  std::vector<double> rhs_local(mesh_.cells.size());
+  std::vector<Vec3> grad_local;
+  assemble(dcell_c, cold, bcface, c, dt, 0.0, nonortho, seg, rhs_local,
+           grad_local);
+  A_.mul(c, F);
+  const int n = static_cast<int>(F.size());
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < n; ++i) F[i] -= rhs_local[i];
+}
+
 void DiffusionSolver::run(std::vector<SpeciesField>& fields,
                           const std::vector<DirichletBC>& bcs,
                           const DiffuseOpts& o) {
@@ -469,6 +490,19 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
     const double cfloor = 1e-3 * std::max(cmax, 1.0);
 
     int picard = 0, lin_iters = 0;
+    int newton_iters_step = 0;  // S-3: total per-species Newton iters this step
+    // S-3: per-species reference ||F0|| for the Newton stopping test, fixed
+    // at the first Picard/nni pass of this time step rather than recomputed
+    // every pass. Once nni has (nearly) converged across a few outer passes,
+    // a later pass's own ||F0|| for a well-behaved species can legitimately
+    // sit at the finite-difference Jacobian's noise floor (measured: this
+    // solver's per-species subproblem is affine in c given frozen dcell, so
+    // Newton reaches that floor in 1-2 iterations) -- testing against that
+    // shrunk ||F0|| makes newton_rtol effectively unreachable and spuriously
+    // throws even though the field is already converged. Using the larger,
+    // stable first-pass scale keeps the relative target meaningful across
+    // the whole time step.
+    std::vector<double> newton_ref0(ns, -1.0);
     double maxrel = 0;
     for (picard = 1; picard <= o.max_picard; ++picard) {
       // n/ni from charge neutrality with the current iterate of all species.
@@ -529,40 +563,146 @@ void DiffusionSolver::run(std::vector<SpeciesField>& fields,
         const Dopant& dp = *fields[s].dopant;
         std::vector<double>& c = *fields[s].conc;
         const SegTable seg = make_seg_table(dp, T, has_segregation_);
-        assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
-                 rhs, grad);
 
-        // Bicgstab is only needed if a present material pair has m != 1 (the
-        // segregation cross-terms then make the matrix non-symmetric); a
-        // pure m=1 mesh (or no segregation faces at all) stays SPD.
-        bool need_bicg = false;
-        for (const auto& [lo, hi] : seg_pairs_)
-          if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) { need_bicg = true; break; }
+        if (!o.use_newton) {
+          // --- Existing Picard-style linear solve. Untouched (S-3 requires
+          // this path be byte-identical to pre-S-3 behavior). ---
+          assemble(dcell[s], cold[s], bcface[s], c, dt, 0.0, o.nonortho, seg,
+                   rhs, grad);
 
-        x = c;  // warm start
-        // ILU(0)-preconditioned CG (parallel, level-scheduled triangular solves)
-        // with a BiCGSTAB fallback for the occasional non-SPD assembly.
-        SolveResult sr;
-        if (need_bicg) {
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          // Bicgstab is only needed if a present material pair has m != 1
+          // (the segregation cross-terms then make the matrix
+          // non-symmetric); a pure m=1 mesh (or no segregation faces at
+          // all) stays SPD.
+          bool need_bicg = false;
+          for (const auto& [lo, hi] : seg_pairs_)
+            if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) { need_bicg = true; break; }
+
+          x = c;  // warm start
+          // ILU(0)-preconditioned CG (parallel, level-scheduled triangular
+          // solves) with a BiCGSTAB fallback for the occasional non-SPD
+          // assembly.
+          SolveResult sr;
+          if (need_bicg) {
+            sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          } else {
+            sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          }
+          if (!sr.converged) {
+            x = c;
+            sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+            if (!sr.converged)
+              throw std::runtime_error(
+                  "diffusion: linear solver failed (resid=" +
+                  std::to_string(sr.resid) + ")");
+          }
+          lin_iters += sr.iters;
+          for (int i = 0; i < nc; ++i)
+            maxrel = std::max(maxrel,
+                              std::fabs(x[i] - c[i]) / (std::fabs(x[i]) + cfloor));
+          c = x;
         } else {
-          sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          // --- S-3: Jacobian-Free Newton-Krylov (JFNK) solve for this
+          // species, replacing the single linear solve above. nni (species
+          // coupling) stays frozen at the outer-loop value computed just
+          // above, exactly like Picard's per-species decoupling.
+          std::vector<double> F0;
+          residual(dcell[s], cold[s], bcface[s], c, dt, o.nonortho, seg, F0);
+          double normF0sq = 0.0;
+          for (double v : F0) normF0sq += v * v;
+          const double normF0 = std::sqrt(normF0sq);
+          if (newton_ref0[s] < 0.0) newton_ref0[s] = normF0;
+          const double ref0 = (newton_ref0[s] > 0.0) ? newton_ref0[s] : normF0;
+
+          if (normF0 > 0.0) {
+            // A_ was just rebuilt (by residual()'s assemble() call) at the
+            // base point c -- factor and freeze the ILU0 preconditioner
+            // for the whole Newton solve, per the spec.
+            ILU0 ilu;
+            ilu.factor(A_);
+            const Precond iluP = [&](const std::vector<double>& in,
+                                     std::vector<double>& out) {
+              ilu.apply(in, out);
+            };
+
+            std::vector<double> cw = c;
+            std::vector<double> F = F0;
+            double normF = normF0;
+            double normc0sq = 0.0;
+            for (double v : cw) normc0sq += v * v;
+            const double normc0 = std::sqrt(normc0sq);
+
+            int k = 1;
+            for (; k <= 10; ++k) {
+              // Jv ~= (F(cw + eps*v) - F(cw)) / eps: finite-difference
+              // directional derivative (Jacobian-vector product), one
+              // assemble() + one SpMV per operator application. dcell is
+              // re-evaluated (species-own dependence only; nni stays
+              // frozen from the outer loop) via residual()'s assemble().
+              const LinOp Jop = [&](const std::vector<double>& v,
+                                    std::vector<double>& Jv) {
+                double normv_sq = 0.0;
+                for (double vi : v) normv_sq += vi * vi;
+                const double normv = std::sqrt(normv_sq);
+                if (normv == 0.0) { Jv.assign(nc, 0.0); return; }
+                const double eps = std::sqrt(std::numeric_limits<double>::epsilon()) *
+                                    (1.0 + normc0) / normv;
+                std::vector<double> cpert(nc);
+                for (int i = 0; i < nc; ++i) cpert[i] = cw[i] + eps * v[i];
+                std::vector<double> Fp;
+                residual(dcell[s], cold[s], bcface[s], cpert, dt, o.nonortho,
+                         seg, Fp);
+                Jv.resize(nc);
+                for (int i = 0; i < nc; ++i) Jv[i] = (Fp[i] - F[i]) / eps;
+              };
+
+              std::vector<double> Fneg(nc);
+              for (int i = 0; i < nc; ++i) Fneg[i] = -F[i];
+              std::vector<double> delta;
+              gmres_op(Jop, nc, Fneg, delta, o.lin_rtol, o.lin_maxit, 30, iluP);
+
+              // Note: unlike the deferred-correction undershoot clamp that
+              // runs once per *time step* (after the whole species loop,
+              // see below), Newton does NOT clamp negative values on every
+              // inner iteration here. F(c) here is (to machine precision)
+              // affine in c for this solver (fixed dcell + a linear
+              // deferred-gradient rhs correction), so an exact Newton step
+              // should land within ~1-2 iterations; clamping every
+              // iteration was measured to create a spurious fixed point
+              // (delta reapplied identically every iteration, residual
+              // stuck around 1e-3 relative) that never satisfies
+              // newton_rtol, because the clamp silently discards part of
+              // the correction the linear solve just computed. The
+              // per-time-step clamp at the end of run()'s outer loop still
+              // removes any negative undershoot from the converged field.
+              for (int i = 0; i < nc; ++i) cw[i] += delta[i];
+              residual(dcell[s], cold[s], bcface[s], cw, dt, o.nonortho, seg, F);
+              double normFsq = 0.0;
+              for (double v : F) normFsq += v * v;
+              normF = std::sqrt(normFsq);
+              if (normF < o.newton_rtol * ref0) break;
+            }
+            if (!(normF < o.newton_rtol * ref0))
+              throw std::runtime_error(
+                  "diffusion: Newton failed to converge in 10 iterations "
+                  "(||F||/||F0||=" +
+                  std::to_string(normF / ref0) + ")");
+
+            newton_iters_step += std::min(k, 10);
+            for (int i = 0; i < nc; ++i)
+              maxrel = std::max(
+                  maxrel, std::fabs(cw[i] - c[i]) / (std::fabs(cw[i]) + cfloor));
+            c = cw;
+          }
         }
-        if (!sr.converged) {
-          x = c;
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-          if (!sr.converged)
-            throw std::runtime_error(
-                "diffusion: linear solver failed (resid=" +
-                std::to_string(sr.resid) + ")");
-        }
-        lin_iters += sr.iters;
-        for (int i = 0; i < nc; ++i)
-          maxrel = std::max(maxrel,
-                            std::fabs(x[i] - c[i]) / (std::fabs(x[i]) + cfloor));
-        c = x;
       }
       if (maxrel < o.picard_tol) break;
+    }
+
+    // S-3 diagnostics only: total nonlinear-iteration count for this step,
+    // added to the caller's counter if it opted in. No effect on results.
+    if (o.nl_iters) {
+      *o.nl_iters += o.use_newton ? newton_iters_step : std::min(picard, o.max_picard);
     }
 
     // The deferred correction can produce small negative undershoots.

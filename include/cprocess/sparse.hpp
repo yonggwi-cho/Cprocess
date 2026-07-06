@@ -68,6 +68,18 @@ SolveResult gmres_jacobi(const CSR& A, const std::vector<double>& b,
                          std::vector<double>& x, double rtol, int maxit,
                          int restart = 30);
 
+// Generic operator form of restarted GMRES: right-preconditioned, works with
+// any linear operator `aop` (y <- A x) and preconditioner `psolve`
+// (y <- M^{-1} x) of dimension `n` -- no CSR required (used by S-3's
+// Jacobian-free Newton-Krylov, where the "matrix" is a finite-difference
+// directional derivative). `gmres_jacobi` above is a thin wrapper around
+// this with aop = A.mul and psolve = Jacobi(inv_diag(A)).
+using LinOp = std::function<void(const std::vector<double>&,
+                                 std::vector<double>&)>;
+SolveResult gmres_op(const LinOp& aop, int n, const std::vector<double>& b,
+                     std::vector<double>& x, double rtol, int maxit,
+                     int restart, const Precond& psolve);
+
 // ILU(0)-preconditioned variants (parallel triangular solves). The factor is
 // built internally from A on every call; pass a prebuilt one via the *_pc forms
 // to reuse the factorization across right-hand sides.
