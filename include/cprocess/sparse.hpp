@@ -15,6 +15,19 @@ struct CSR {
   int find(int row, int c) const;  // value slot of (row, c), -1 if absent
 };
 
+// PA-2: Reverse Cuthill-McKee ordering of the (symmetric-pattern) matrix A,
+// to shrink matrix bandwidth for better SpMV cache locality. Returns
+// perm with perm[new] = old. Deterministic: pseudo-peripheral node search
+// (BFS from node 0, then BFS from the farthest node found) picks the CM
+// start node; neighbors are queued in (degree asc, index asc) order;
+// disconnected components are each processed in turn, starting from the
+// lowest-index unvisited node.
+std::vector<int> rcm_order(const CSR& A);
+
+// Symmetric permutation: B(new_i, new_j) = A(perm[new_i], perm[new_j]).
+// Row columns of the result are sorted by column index.
+CSR permute(const CSR& A, const std::vector<int>& perm);
+
 struct SolveResult {
   bool converged = false;
   int iters = 0;

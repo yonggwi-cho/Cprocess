@@ -164,6 +164,49 @@ void DiffusionSolver::build() {
     fslot_[fi] = {A_.find(f.owner, f.neigh), A_.find(f.neigh, f.owner)};
   }
 
+  // PA-2: RCM reordering for SpMV cache locality. Store A_ itself in
+  // permuted form and remap diag_/fslot_ to point at the permuted matrix's
+  // slots ("assemble unchanged, only the slot indices move"): diag_/fslot_
+  // keep their old cell/face-indexed convention, but now target the slot
+  // that old cell/face's contribution lands in within the permuted matrix.
+  if (nc == 0) {
+    perm_.clear();
+    iperm_.clear();
+  } else {
+    perm_ = rcm_order(A_);
+    iperm_.assign(nc, 0);
+    for (int i = 0; i < nc; ++i) iperm_[perm_[i]] = i;
+
+    int bw_before = 0;
+    for (int i = 0; i < nc; ++i)
+      for (int k = A_.ptr[i]; k < A_.ptr[i + 1]; ++k)
+        bw_before = std::max(bw_before, std::abs(i - A_.col[k]));
+
+    CSR A_perm = permute(A_, perm_);  // A_.val is all-zero at this point
+
+    std::vector<int> diag_new(nc);
+    for (int i = 0; i < nc; ++i)
+      diag_new[i] = A_perm.find(iperm_[i], iperm_[i]);
+    std::vector<std::array<int, 2>> fslot_new(nf, {-1, -1});
+    for (int fi = 0; fi < nf; ++fi) {
+      if (fg_[fi].kind != kInternal && fg_[fi].kind != kSegregation) continue;
+      const Face& f = mesh_.faces[fi];
+      fslot_new[fi] = {A_perm.find(iperm_[f.owner], iperm_[f.neigh]),
+                       A_perm.find(iperm_[f.neigh], iperm_[f.owner])};
+    }
+    diag_ = std::move(diag_new);
+    fslot_ = std::move(fslot_new);
+    A_ = std::move(A_perm);
+
+    int bw_after = 0;
+    for (int i = 0; i < nc; ++i)
+      for (int k = A_.ptr[i]; k < A_.ptr[i + 1]; ++k)
+        bw_after = std::max(bw_after, std::abs(i - A_.col[k]));
+    if (log_)
+      *log_ << "[diffuse] RCM: bandwidth " << bw_before << " -> " << bw_after
+            << " (n=" << nc << ")\n";
+  }
+
   // Greedy coloring of active faces. Two faces conflict if they share a cell
   // (owner or neigh); giving each face the lowest color used by none of its
   // already-colored conflicting faces guarantees that same-color faces write to
@@ -437,10 +480,36 @@ void DiffusionSolver::residual(const std::vector<double>& dcell_c,
   std::vector<Vec3> grad_local;
   assemble(dcell_c, cold, bcface, c, dt, 0.0, nonortho, seg, rhs_local,
            grad_local);
-  A_.mul(c, F);
-  const int n = static_cast<int>(F.size());
+  // PA-2: A_ is stored RCM-permuted, but c/F are in original cell order --
+  // map c into permuted order for the SpMV, then map the result back.
+  const int n = static_cast<int>(c.size());
+  std::vector<double> cp(n), Fp;
+  for (int i = 0; i < n; ++i) cp[i] = c[perm_[i]];
+  A_.mul(cp, Fp);
+  F.resize(n);
+  for (int i = 0; i < n; ++i) F[perm_[i]] = Fp[i];
 #pragma omp parallel for schedule(static)
   for (int i = 0; i < n; ++i) F[i] -= rhs_local[i];
+}
+
+SolveResult DiffusionSolver::solve_permuted(const CSR& Ap,
+                                            const std::vector<double>& rhs,
+                                            std::vector<double>& x,
+                                            double rtol, int maxit,
+                                            bool need_bicg,
+                                            std::vector<double>& rhs_p,
+                                            std::vector<double>& x_p) const {
+  const int n = Ap.n;
+  rhs_p.resize(n);
+  x_p.resize(n);
+  for (int i = 0; i < n; ++i) {
+    rhs_p[i] = rhs[perm_[i]];
+    x_p[i] = x[perm_[i]];
+  }
+  SolveResult sr = need_bicg ? bicgstab_ilu0(Ap, rhs_p, x_p, rtol, maxit)
+                             : cg_ilu0(Ap, rhs_p, x_p, rtol, maxit);
+  for (int i = 0; i < n; ++i) x[perm_[i]] = x_p[i];
+  return sr;
 }
 
 void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
@@ -576,16 +645,14 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
         x = c;  // warm start
         // ILU(0)-preconditioned CG (parallel, level-scheduled triangular
         // solves) with a BiCGSTAB fallback for the occasional non-SPD
-        // assembly.
-        SolveResult sr;
-        if (need_bicg) {
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-        } else {
-          sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-        }
+        // assembly. solve_permuted() maps rhs/x in/out of A_'s RCM-permuted
+        // order (PA-2) around the actual solve.
+        SolveResult sr = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit,
+                                        need_bicg, rhs_p_, x_p_);
         if (!sr.converged) {
           x = c;
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          sr = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, true,
+                              rhs_p_, x_p_);
           if (!sr.converged)
             throw std::runtime_error(
                 "diffusion: linear solver failed (resid=" +
@@ -615,9 +682,19 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
           // for the whole Newton solve, per the spec.
           ILU0 ilu;
           ilu.factor(A_);
+          // PA-2: A_ (and hence ilu) is factored in RCM-permuted order, but
+          // Jop (below) operates on original-cell-order vectors (it calls
+          // residual(), which itself maps in/out of permuted order only for
+          // its internal SpMV). Conjugate the ILU apply by perm_ so the
+          // preconditioner acts consistently in the same (original) space
+          // Jop uses.
           const Precond iluP = [&](const std::vector<double>& in,
                                    std::vector<double>& out) {
-            ilu.apply(in, out);
+            std::vector<double> inp(nc), outp;
+            for (int i = 0; i < nc; ++i) inp[i] = in[perm_[i]];
+            ilu.apply(inp, outp);
+            out.assign(nc, 0.0);
+            for (int i = 0; i < nc; ++i) out[perm_[i]] = outp[i];
           };
 
           std::vector<double> cw = c;
@@ -741,15 +818,15 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
           CSR As{A_.n, A_.ptr, A_.col, ws[s].Aval};
 
           ws[s].x = c;  // warm start
-          SolveResult sr;
-          if (need_bicg) {
-            sr = bicgstab_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
-          } else {
-            sr = cg_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
-          }
+          // solve_permuted() uses this thread's own ws[s].rhs_p/x_p scratch
+          // (PA-2), so the parallel region has no data race on them.
+          SolveResult sr = solve_permuted(As, ws[s].rhs, ws[s].x, o.lin_rtol,
+                                          o.lin_maxit, need_bicg, ws[s].rhs_p,
+                                          ws[s].x_p);
           if (!sr.converged) {
             ws[s].x = c;
-            sr = bicgstab_ilu0(As, ws[s].rhs, ws[s].x, o.lin_rtol, o.lin_maxit);
+            sr = solve_permuted(As, ws[s].rhs, ws[s].x, o.lin_rtol,
+                                o.lin_maxit, true, ws[s].rhs_p, ws[s].x_p);
             if (!sr.converged) {
               failed[s] = 1;
               errmsg[s] = "diffusion: linear solver failed (resid=" +
@@ -991,14 +1068,22 @@ void DiffusionSolver::step_once_ted(
   std::vector<double> CI_old = CI, CV_old = CV;
   assemble(dI, CI_old, ci_bcface, CI_old, dt, 0.0, o.nonortho, SegTable{}, rhs, grad);
   x = CI;
-  SolveResult sI = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-  if (!sI.converged) { x = CI; bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit); }
+  SolveResult sI = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, false,
+                                  rhs_p_, x_p_);
+  if (!sI.converged) {
+    x = CI;
+    solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, true, rhs_p_, x_p_);
+  }
   CI = x;
 
   assemble(dV, CV_old, cv_bcface, CV_old, dt, 0.0, o.nonortho, SegTable{}, rhs, grad);
   x = CV;
-  SolveResult sV = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-  if (!sV.converged) { x = CV; bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit); }
+  SolveResult sV = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, false,
+                                  rhs_p_, x_p_);
+  if (!sV.converged) {
+    x = CV;
+    solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, true, rhs_p_, x_p_);
+  }
   CV = x;
 
   // ── 1b. Reaction sub-cycling (linearized backward Euler). See run_ted()'s
@@ -1160,15 +1245,12 @@ void DiffusionSolver::step_once_ted(
         for (const auto& [lo, hi] : seg_pairs_)
           if (seg.h[lo][hi] > 0 && seg.m[lo][hi] != 1.0) { need_bicg = true; break; }
         x = c;
-        SolveResult sr;
-        if (need_bicg) {
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-        } else {
-          sr = cg_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
-        }
+        SolveResult sr = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit,
+                                        need_bicg, rhs_p_, x_p_);
         if (!sr.converged) {
           x = c;
-          sr = bicgstab_ilu0(A_, rhs, x, o.lin_rtol, o.lin_maxit);
+          sr = solve_permuted(A_, rhs, x, o.lin_rtol, o.lin_maxit, true,
+                              rhs_p_, x_p_);
           if (!sr.converged)
             throw std::runtime_error("ted: linear solver failed");
         }

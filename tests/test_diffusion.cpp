@@ -151,10 +151,87 @@ static void test_mask_wall() {
   CHECK_NEAR(active1, active0, 1e-6 * active0);
 }
 
+// PA-2: RCM reordering must not change physical results (dose conservation,
+// reproducibility) or degrade convergence, relative to the pre-PA-2 solver.
+static void test_rcm_integration() {
+  const double um = 1e-4;
+  Mesh mesh = make_box_mesh(0, 0.2 * um, 0, 0.2 * um, 0, 2.0 * um, 2, 2, 96);
+  const Dopant* boron = find_dopant("B");
+  CHECK(boron != nullptr);
+
+  ImplantParams ip;
+  ip.dopant = boron;
+  ip.dose = 1e12;
+  ip.rp = 1.0 * um;
+  ip.drp = 0.05 * um;
+  std::vector<double> conc0;
+  std::vector<char> mask(mesh.cells.size(), 1);
+  apply_implant(mesh, mask, ip, conc0);
+
+  double mass0, mu0, var0;
+  moments(mesh, conc0, mass0, mu0, var0);
+  double peak0 = 0;
+  for (double v : conc0) peak0 = std::max(peak0, v);
+
+  DiffuseOpts o;
+  o.temp = 1373.15;
+  o.time = 600;
+  o.dt = 30;
+  o.field_enh = false;
+  o.verbosity = 0;
+
+  // --- run #1 ---
+  std::vector<double> conc1 = conc0;
+  int picard_iters1 = 0;
+  o.nl_iters = &picard_iters1;
+  std::vector<SpeciesField> fields1 = {{boron, &conc1}};
+  DiffusionSolver solver1(mesh, mask, nullptr);
+  solver1.run(fields1, {}, o);
+
+  double mass1, mu1, var1;
+  moments(mesh, conc1, mass1, mu1, var1);
+  double peak1 = 0;
+  for (double v : conc1) peak1 = std::max(peak1, v);
+
+  // Measured on this exact case with the pre-PA-2 solver (commit e7568de,
+  // natural mesh cell order, no RCM reordering): mass0=mass1=4.0e2 (exact,
+  // as expected for zero-flux conservation), peak1=2.8170413934e16,
+  // picard_iters=153. Baked in here as the reference for the "results
+  // unchanged, convergence not degraded" checks below, per the spec's
+  // prescribed method (measure once before the change, assert against the
+  // recorded constant after).
+  const double ref_mass = 4.0e2;
+  const double ref_peak1 = 2.8170413934e16;
+  const int ref_picard_iters = 153;
+
+  std::printf("rcm integration: mass0=%.6e mass1=%.6e peak1=%.6e picard_iters=%d\n",
+              mass0, mass1, peak1, picard_iters1);
+
+  CHECK_NEAR(mass1, ref_mass, 1e-9 * ref_mass);  // dose conservation < 1e-9 rel
+  CHECK_NEAR(peak1, ref_peak1, 1e-9 * ref_peak1);  // peak matches pre-PA-2
+  CHECK(peak1 > 0 && peak1 < peak0);              // diffused, still positive
+
+  // --- run #2: identical inputs must reproduce bit-identical results. ---
+  std::vector<double> conc2 = conc0;
+  int picard_iters2 = 0;
+  o.nl_iters = &picard_iters2;
+  std::vector<SpeciesField> fields2 = {{boron, &conc2}};
+  DiffusionSolver solver2(mesh, mask, nullptr);
+  solver2.run(fields2, {}, o);
+
+  for (std::size_t i = 0; i < conc1.size(); ++i) CHECK(conc1[i] == conc2[i]);
+  CHECK(picard_iters2 == picard_iters1);
+
+  // --- iteration count within +/-10% of the pre-PA-2 baseline. ---
+  CHECK(picard_iters1 <= static_cast<int>(1.10 * ref_picard_iters) + 1);
+  CHECK(picard_iters1 >= static_cast<int>(0.90 * ref_picard_iters) - 1);
+}
+
 int main() {
   test_gaussian_spread();
   test_predeposition();
   test_mask_wall();
+  test_rcm_integration();
   std::printf("diffusion tests passed\n");
   return 0;
 }

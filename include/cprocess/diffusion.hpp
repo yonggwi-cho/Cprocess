@@ -263,7 +263,24 @@ class DiffusionSolver {
   struct SolveWorkspace {
     std::vector<double> Aval, rhs, x;
     std::vector<Vec3> grad;
+    // PA-2: per-species permuted-space scratch for solve_permuted(), kept
+    // separate from the shared rhs_p_/x_p_ members so the species-parallel
+    // #pragma omp parallel for below has no data race on them.
+    std::vector<double> rhs_p, x_p;
   };
+
+  // PA-2: rhs/x live in original (mesh) cell order; A_ (see below) is stored
+  // in RCM-permuted order for SpMV cache locality. Maps rhs/x into permuted
+  // order, runs the actual linear solve (cg_ilu0 or bicgstab_ilu0 on `Ap`,
+  // which must share perm_'s permuted sparsity pattern -- either A_ itself,
+  // or a per-species shallow copy sharing A_.ptr/A_.col), and maps the
+  // solution back. `rhs_p`/`x_p` are caller-provided scratch (rhs_p_/x_p_
+  // for the single-threaded call sites, SolveWorkspace::rhs_p/x_p for the
+  // species-parallel path) so concurrent callers don't alias buffers.
+  SolveResult solve_permuted(const CSR& Ap, const std::vector<double>& rhs,
+                             std::vector<double>& x, double rtol, int maxit,
+                             bool need_bicg, std::vector<double>& rhs_p,
+                             std::vector<double>& x_p) const;
 
   const Mesh& mesh_;
   std::vector<char> mask_;
@@ -279,6 +296,16 @@ class DiffusionSolver {
   std::vector<int> diag_;                  // diagonal slot per cell
   std::vector<std::array<int, 2>> fslot_;  // (P,N) and (N,P) slots per face
   int clamped_faces_ = 0;                  // faces with poor orthogonality
+
+  // PA-2: RCM (Reverse Cuthill-McKee) permutation of A_'s rows/columns for
+  // SpMV cache locality. perm_[new] = old (mesh) cell index; iperm_[old] =
+  // new. A_ itself is stored in permuted order (assembled directly into it
+  // via diag_/fslot_ slots that build() remaps to point at the permuted
+  // matrix's slots -- see build()), so assemble()/assemble_into() need no
+  // changes. rhs/x and all fields stay in original cell order; solve_
+  // permuted() maps them in/out of permuted order around the actual solve.
+  std::vector<int> perm_, iperm_;
+  mutable std::vector<double> rhs_p_, x_p_;  // permuted-space scratch
 
   // Greedy face coloring: faces within one color share no cell, so their
   // scatter-adds into cell rows are race-free and can run in parallel.

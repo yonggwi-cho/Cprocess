@@ -1220,4 +1220,129 @@ SolveResult bicgstab_bjacobi(const BCSR& A, const std::vector<double>& b,
   return res;
 }
 
+// PA-2: BFS from `start`, returns the farthest node reached (ties broken by
+// lowest node index, for full determinism) together with the level array.
+namespace {
+int bfs_farthest(const CSR& A, int start, std::vector<int>& level) {
+  const int n = A.n;
+  level.assign(n, -1);
+  level[start] = 0;
+  std::vector<int> q;
+  q.reserve(n);
+  q.push_back(start);
+  int maxlvl = 0;
+  for (std::size_t qi = 0; qi < q.size(); ++qi) {
+    const int u = q[qi];
+    for (int k = A.ptr[u]; k < A.ptr[u + 1]; ++k) {
+      const int v = A.col[k];
+      if (v == u || level[v] != -1) continue;
+      level[v] = level[u] + 1;
+      maxlvl = std::max(maxlvl, level[v]);
+      q.push_back(v);
+    }
+  }
+  int best = -1, best_deg = -1;
+  for (int i = 0; i < n; ++i) {
+    if (level[i] != maxlvl) continue;
+    int d = 0;
+    for (int k = A.ptr[i]; k < A.ptr[i + 1]; ++k)
+      if (A.col[k] != i) ++d;
+    if (best == -1 || d < best_deg) { best = i; best_deg = d; }
+  }
+  return best != -1 ? best : start;
+}
+}  // namespace
+
+std::vector<int> rcm_order(const CSR& A) {
+  const int n = A.n;
+  std::vector<int> order;
+  if (n == 0) return order;
+  order.reserve(n);
+
+  std::vector<int> degree(n, 0);
+  for (int i = 0; i < n; ++i) {
+    int d = 0;
+    for (int k = A.ptr[i]; k < A.ptr[i + 1]; ++k)
+      if (A.col[k] != i) ++d;
+    degree[i] = d;
+  }
+
+  std::vector<char> visited(n, 0);
+  std::vector<int> level;  // scratch for bfs_farthest
+
+  auto cm_bfs = [&](int start) {
+    std::vector<int> q;
+    q.reserve(n);
+    visited[start] = 1;
+    order.push_back(start);
+    q.push_back(start);
+    for (std::size_t qi = 0; qi < q.size(); ++qi) {
+      const int u = q[qi];
+      std::vector<int> nbrs;
+      for (int k = A.ptr[u]; k < A.ptr[u + 1]; ++k) {
+        const int v = A.col[k];
+        if (v != u && !visited[v]) nbrs.push_back(v);
+      }
+      std::sort(nbrs.begin(), nbrs.end(), [&](int a, int b) {
+        if (degree[a] != degree[b]) return degree[a] < degree[b];
+        return a < b;
+      });
+      for (int v : nbrs) {
+        if (!visited[v]) {
+          visited[v] = 1;
+          order.push_back(v);
+          q.push_back(v);
+        }
+      }
+    }
+  };
+
+  // Pseudo-peripheral node search (capped at two BFS passes, per spec):
+  // BFS from the seed to get the farthest node u, then BFS from u to get
+  // the farthest node v; v is used as the Cuthill-McKee start node.
+  // Repeated per disconnected component, starting from the lowest-index
+  // unvisited node each time.
+  for (int seed = 0; seed < n; ++seed) {
+    if (visited[seed]) continue;
+    const int u = bfs_farthest(A, seed, level);
+    const int v = bfs_farthest(A, u, level);
+    cm_bfs(v);
+  }
+
+  std::vector<int> perm(n);
+  for (int i = 0; i < n; ++i) perm[i] = order[n - 1 - i];  // reverse
+  return perm;
+}
+
+CSR permute(const CSR& A, const std::vector<int>& perm) {
+  const int n = A.n;
+  CSR B;
+  B.n = n;
+  if (n == 0) return B;
+  std::vector<int> iperm(n);
+  for (int i = 0; i < n; ++i) iperm[perm[i]] = i;
+
+  B.ptr.assign(n + 1, 0);
+  for (int newi = 0; newi < n; ++newi) {
+    const int oldi = perm[newi];
+    B.ptr[newi + 1] = B.ptr[newi] + (A.ptr[oldi + 1] - A.ptr[oldi]);
+  }
+  B.col.resize(B.ptr[n]);
+  B.val.resize(B.ptr[n]);
+  std::vector<std::pair<int, double>> row;
+  for (int newi = 0; newi < n; ++newi) {
+    const int oldi = perm[newi];
+    row.clear();
+    for (int k = A.ptr[oldi]; k < A.ptr[oldi + 1]; ++k)
+      row.emplace_back(iperm[A.col[k]], A.val[k]);
+    std::sort(row.begin(), row.end());
+    const int off = B.ptr[newi];
+    for (std::size_t t = 0; t < row.size(); ++t) {
+      B.col[off + static_cast<int>(t)] = row[t].first;
+      B.val[off + static_cast<int>(t)] = row[t].second;
+    }
+  }
+  return B;
+}
+
 }  // namespace cp
