@@ -49,6 +49,17 @@ struct DiffuseOpts {
   // Empty = isothermal at `temp`. Must be sorted, start at t=0, size >= 2.
   // Beyond the last breakpoint the last temperature is held.
   std::vector<std::pair<double, double>> temp_profile;
+
+  // S-5: step-doubling adaptive time-step control. Only takes effect when
+  // `dt == 0` (the "auto" fixed-step selector, time/50) *and* `adaptive_dt`
+  // is true; any other combination (dt > 0, or adaptive_dt == false, the
+  // default) runs the original fixed-step loop completely unchanged --
+  // bit-identical to pre-S-5 behavior.
+  bool adaptive_dt = false;
+  double dt_tol = 0.05;   // relative local-error tolerance (step-doubling)
+  // If non-null, the dt of every *accepted* step is appended, in order.
+  // Diagnostic only; never read by run()/run_ted() themselves.
+  mutable std::vector<double>* step_log = nullptr;
 };
 
 // T(t) [K]: linear interpolation of opts.temp_profile; opts.temp if empty.
@@ -177,6 +188,48 @@ class DiffusionSolver {
                 const std::vector<double>& bcface,
                 const std::vector<double>& c, double dt, bool nonortho,
                 const SegTable& seg, std::vector<double>& F);
+
+  // S-5: one backward-Euler step of length `dt` for run(), factored out of
+  // its former fixed-step loop body so both the fixed-step and adaptive-dt
+  // control loops can call it identically. Advances every field in `fields`
+  // in place (cold-save, Picard/Newton solve per S-3's o.use_newton branch,
+  // negative-undershoot clamp); `T` is the (already time-interpolated)
+  // temperature to use for this step. Scratch buffers (cold, dcell, nni,
+  // rhs, x, grad) are caller-owned so repeated trial calls (step-doubling)
+  // reuse allocations. Outputs the step's Picard-pass count / linear
+  // iteration total / Newton iteration total for the caller's log line.
+  void step_once(std::vector<SpeciesField>& fields,
+                 const std::vector<std::vector<double>>& bcface,
+                 const DiffuseOpts& o, double dt, double T,
+                 std::vector<std::vector<double>>& cold,
+                 std::vector<std::vector<double>>& dcell,
+                 std::vector<double>& nni, std::vector<double>& rhs,
+                 std::vector<double>& x, std::vector<Vec3>& grad,
+                 int& picard_out, int& lin_iters_out, int& newton_iters_out);
+
+  // S-5: one backward-Euler step of length `dt` for run_ted(), covering the
+  // full P2-1 point-defect sub-step (CI/CV implicit diffusion, reaction
+  // sub-cycling, dopant clustering, carbon-interstitial sink, dopant Picard
+  // diffusion) -- the entire body of run_ted()'s former fixed-step loop.
+  // `CI`/`CV`/`c311` and every field in `fields` are the state, advanced in
+  // place. `pdp_out` receives the PointDefectParams used for this step (T-
+  // dependent), which the caller needs after the loop ends to convert CI/CV
+  // back to the excess (psi/v) fields it returns.
+  void step_once_ted(std::vector<SpeciesField>& fields,
+                      const std::vector<std::vector<double>>& bcface,
+                      const std::vector<int>& ztop_faces,
+                      const std::vector<double>& fi_ov, double c_ref,
+                      const DiffuseOpts& o, double dt, double T,
+                      std::vector<double>& CI, std::vector<double>& CV,
+                      std::vector<double>& c311,
+                      std::vector<std::vector<double>>& cold,
+                      std::vector<std::vector<double>>& dcell,
+                      std::vector<double>& nni, std::vector<double>& rhs,
+                      std::vector<double>& x, std::vector<Vec3>& grad,
+                      std::vector<double>& dI, std::vector<double>& dV,
+                      std::vector<double>& ci_bcface,
+                      std::vector<double>& cv_bcface, double& smax_out,
+                      double& c311max_out, PointDefectParams& pdp_out);
 
   const Mesh& mesh_;
   std::vector<char> mask_;
