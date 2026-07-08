@@ -1091,6 +1091,67 @@ def test_save_load_state_python():
         os.unlink(path)
 
 
+def test_export_device_python():
+    """P3-h: device-simulator export (VTU point data + meta.json sidecar)."""
+    print("test_export_device_python")
+    import json
+    import xml.etree.ElementTree as ET
+
+    sim = cp.Simulation()
+    sim.mesh(x=1.0, y=1.0, z=1.0, nx=6, ny=6, nz=12)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.implant("As", dose=1e15, energy=30)
+    sim.deposit("oxide", thickness=0.1)
+    sim.diffuse(time=10, temp=1000)
+
+    tmpdir = tempfile.mkdtemp()
+    prefix = os.path.join(tmpdir, "device_export_test")
+    try:
+        ret = sim.export_device(prefix)
+        check(ret is sim, "export_device: chainable (returns self)")
+
+        meta_path = prefix + ".meta.json"
+        vtu_path = prefix + ".vtu"
+
+        with open(meta_path) as f:
+            meta = json.load(f)
+        check(isinstance(meta, dict), "export_device: meta.json parses as JSON")
+
+        required_keys = {"format", "version", "files", "units", "mesh",
+                          "regions", "boundaries", "species", "net_doping",
+                          "fields", "last_temp_k"}
+        check(required_keys.issubset(meta.keys()),
+              "export_device: meta.json has required keys")
+        check(meta["net_doping"]["convention"] == "ND-NA",
+              "export_device: net_doping convention is ND-NA")
+        check(meta["units"]["length"] == "um",
+              "export_device: units.length is um")
+        check(meta["mesh"]["n_cells"] == sim.n_cells,
+              "export_device: meta n_cells matches sim.n_cells")
+
+        species_by_symbol = {s["symbol"]: s for s in meta["species"]}
+        check("As" in species_by_symbol, "export_device: species list has As")
+        check(species_by_symbol["As"]["type"] == "donor",
+              "export_device: As classified as donor")
+        check(species_by_symbol["As"]["in_net_doping"] is True,
+              "export_device: As is in_net_doping")
+
+        tree = ET.parse(vtu_path)
+        check(tree.getroot().tag == "VTKFile",
+              "export_device: vtu parses as well-formed XML (VTKFile root)")
+
+        point_names = {da.attrib["Name"]
+                       for da in tree.getroot().findall(".//PointData/DataArray")}
+        check(point_names == set(meta["fields"]["point"]),
+              "export_device: VTU PointData array names match meta.fields.point")
+    finally:
+        for p in (prefix + ".vtu", prefix + ".meta.json"):
+            if os.path.exists(p):
+                os.unlink(p)
+        os.rmdir(tmpdir)
+
+
 def _build_test_gds(path):
     """Write a minimal GDSII stream (square on layer 2, triangle on layer 5,
     plus an unrecognized PATH-ish record) matching tests/test_gds.cpp's
@@ -1275,6 +1336,7 @@ if __name__ == "__main__":
     test_etch_depo_p17()
     test_topo_p25()
     test_save_load_state_python()
+    test_export_device_python()
     test_load_gds_python()
     test_mechanics_python()
     print("\nall comprehensive Simulation tests passed")

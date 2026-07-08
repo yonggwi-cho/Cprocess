@@ -9,7 +9,9 @@ namespace cp {
 void write_vtu(
     const std::string& path, const Mesh& mesh,
     const std::vector<std::pair<std::string, const std::vector<double>*>>& scalars,
-    const std::vector<std::pair<std::string, const std::vector<int>*>>& int_scalars) {
+    const std::vector<std::pair<std::string, const std::vector<int>*>>& int_scalars,
+    const std::vector<std::pair<std::string, const std::vector<double>*>>&
+        point_scalars) {
   std::ofstream out(path);
   if (!out) throw std::runtime_error("vtu: cannot open for writing: " + path);
 
@@ -44,6 +46,21 @@ void write_vtu(
          "format=\"ascii\">\n";
   for (std::size_t i = 0; i < ncl; ++i) out << "10\n";  // VTK_TETRA
   out << "</DataArray>\n</Cells>\n";
+
+  if (!point_scalars.empty()) {
+    out << "<PointData>\n";
+    for (const auto& [name, data] : point_scalars) {
+      out << "<DataArray type=\"Float64\" Name=\"" << name
+          << "\" format=\"ascii\">\n";
+      for (std::size_t i = 0; i < np; ++i) {
+        std::snprintf(buf, sizeof(buf), "%.6e\n",
+                      i < data->size() ? (*data)[i] : 0.0);
+        out << buf;
+      }
+      out << "</DataArray>\n";
+    }
+    out << "</PointData>\n";
+  }
 
   out << "<CellData>\n";
   for (const auto& [name, data] : scalars) {

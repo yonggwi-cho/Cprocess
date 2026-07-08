@@ -667,6 +667,14 @@ PYBIND11_MODULE(_cprocess, m) {
       },
       py::arg("state"), py::arg("path"));
 
+  m.def("proc_export_device",
+      [](SimState& st, const std::string& prefix) {
+        std::ostringstream log;
+        proc::export_device(st, prefix, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("path_prefix"));
+
   m.def("proc_profile1d",
       [](const SimState& st, const std::string& species, double x, double y) {
         return proc::profile1d(st, species, x, y);

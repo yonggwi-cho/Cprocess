@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "cprocess/ale_mover.hpp"
+#include "cprocess/device_export.hpp"
 #include "cprocess/fem.hpp"
 #include "cprocess/field_transfer.hpp"
 #include "cprocess/gds_reader.hpp"
@@ -2194,6 +2195,22 @@ void load_state(SimState& st, const std::string& path, std::ostream* log) {
   if (log)
     *log << "[load_state] " << path << ": " << st.mesh.cells.size()
          << " cells\n";
+}
+
+void export_device(SimState& st, const std::string& path_prefix, std::ostream* log) {
+  need_mesh(st);
+  if (st.has_stack)
+    throw std::runtime_error("export_device: strip photoresist stack before export");
+  cp::write_device(st, path_prefix);
+  std::size_t n_species = 0;
+  for (const auto& [sym, conc] : st.fields) {
+    (void)conc;
+    if (find_dopant(sym)) ++n_species;
+  }
+  if (log)
+    *log << "[export_device] wrote " << path_prefix << ".vtu + " << path_prefix
+         << ".meta.json (" << st.mesh.cells.size() << " cells, " << n_species
+         << " species)\n";
 }
 
 std::vector<std::pair<double, double>> profile1d(const SimState& st,

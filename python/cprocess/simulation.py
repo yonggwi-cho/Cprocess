@@ -423,6 +423,13 @@ class Simulation:
         self._emit(_c.proc_save(self._st, path))
         return self
 
+    def export_device(self, path_prefix: str) -> "Simulation":
+        """Device-simulator export (P3-h): writes <prefix>.vtu (with
+        node-averaged point-data doping) and <prefix>.meta.json
+        (regions/materials, boundaries, units, species, ND-NA convention)."""
+        self._emit(_c.proc_export_device(self._st, path_prefix))
+        return self
+
     def save_state(self, path: str) -> "Simulation":
         """Save the full simulation state to a binary CPRC1 file."""
         self._emit(_c.proc_save_state(self._st, path))

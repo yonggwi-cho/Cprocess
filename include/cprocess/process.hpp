@@ -233,6 +233,14 @@ void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 void save_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
 void load_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
+// P3-h: device-simulator export. Writes <prefix>.vtu (cell data as
+// proc::save + node-averaged dopant/active/NetDoping point data) and
+// <prefix>.meta.json (region/material table, boundary patch names, unit
+// system, species list, ND-NA sign convention). Throws if a photoresist
+// stack is present (strip first) or on I/O error.
+void export_device(SimState& st, const std::string& path_prefix,
+                   std::ostream* log = nullptr);
+
 // 1-D depth profile of `species` at column (x_cm, y_cm): every non-gas cell
 // whose xy-bbox contains the point, sorted by cell_cent.z ascending. Throws
 // if the species field does not exist; returns an empty vector if no cell's
