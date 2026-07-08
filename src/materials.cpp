@@ -133,6 +133,9 @@ MatId material_id(const std::string& name) {
   if (q == "oxide" || q == "sio2") return kMatOxide;
   if (q == "nitride" || q == "si3n4") return kMatNitride;
   if (q == "poly" || q == "polysilicon") return kMatPoly;
+  if (q == "nickel" || q == "ni" || q == "titanium" || q == "ti")
+    return kMatMetal;
+  if (q == "nisi" || q == "tisi2") return kMatSilicide;
   return kMatGas;  // "gas" and anything unknown
 }
 
@@ -325,6 +328,21 @@ double oxide_diffusivity(const Dopant& d, double temp_k) {
   return dox0 * std::exp(-eox / (kBoltzmannEv * temp_k));
 }
 
+double segregation_m_silicide(const Dopant& d, double temp_k) {
+  const auto& P = ParamDB::instance();
+  const double m0 = P.get(d.symbol + ".seg_sil_m0", d.seg_sil_m0);
+  const double e = P.get(d.symbol + ".seg_sil_e", d.seg_sil_e);
+  return m0 * std::exp(-e / (kBoltzmannEv * temp_k));
+}
+
+double silicide_diffusivity(const Dopant& d, double temp_k) {
+  const auto& P = ParamDB::instance();
+  const double dsil0 = P.get(d.symbol + ".dsil0", d.dsil0);
+  const double esil = P.get(d.symbol + ".esil", d.esil);
+  if (dsil0 <= 0) return 0.0;
+  return dsil0 * std::exp(-esil / (kBoltzmannEv * temp_k));
+}
+
 double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
                             double nni) {
   const auto& P = ParamDB::instance();
@@ -345,6 +363,10 @@ double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
       if (dpoly0 <= 0) return 0.0;
       return dpoly0 * std::exp(-epoly / (kBoltzmannEv * temp_k));
     }
+    case kMatSilicide:
+      return silicide_diffusivity(d, temp_k);
+    case kMatMetal:
+      return 0.0;  // complete barrier: metal is consumed, not diffused-into
     case kMatGas:
     default:
       return 0.0;

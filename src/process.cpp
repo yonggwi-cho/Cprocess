@@ -213,7 +213,8 @@ void set_region(SimState& st, const std::string& material, int tag,
   need_mesh(st);
   const std::string mat = lower(material);
   static const char* known[] = {"silicon", "si", "oxide", "nitride", "poly",
-                                "polysilicon", "gas"};
+                                "polysilicon", "gas", "nickel", "ni",
+                                "titanium", "ti"};
   if (std::none_of(std::begin(known), std::end(known),
                    [&](const char* k) { return mat == k; }))
     throw std::runtime_error("unknown material '" + material + "'");
@@ -511,7 +512,8 @@ void deposit(SimState& st, const std::string& material,
 
   // Validate material name.
   static const char* known[] = {"oxide", "sio2", "nitride", "si3n4", "poly",
-                                 "polysilicon", "silicon", "si"};
+                                 "polysilicon", "silicon", "si",
+                                 "nickel", "ni", "titanium", "ti"};
   const std::string mat = lower(material);
   if (std::none_of(std::begin(known), std::end(known),
                    [&](const char* k) { return mat == k; }))
@@ -1899,6 +1901,190 @@ double oxidize_2d(SimState& st, double time_s, double temp_k, bool wet,
          << " atoms\n";
 
   return open_field_x_o_cm;
+}
+
+// P3-d: blanket silicidation. See process.hpp for the full contract.
+double silicide(SimState& st, const std::string& metal, double temp_k,
+                double time_s, std::ostream* log) {
+  need_mesh(st);
+  if (st.has_stack)
+    throw std::runtime_error("silicide: resist stack is present; strip first");
+  if (time_s <= 0) throw std::runtime_error("silicide: time_s must be > 0");
+
+  const std::string mlow = lower(metal);
+  std::string metal_name, sil_name, pfx;
+  double b0_def, eb_def, rsi_def, rmet_def;
+  if (mlow == "nickel" || mlow == "ni") {
+    metal_name = "nickel"; sil_name = "nisi"; pfx = "silicide.nisi";
+    b0_def = 1.2e-2; eb_def = 1.5; rsi_def = 0.82; rmet_def = 0.45;
+  } else if (mlow == "titanium" || mlow == "ti") {
+    metal_name = "titanium"; sil_name = "tisi2"; pfx = "silicide.tisi2";
+    b0_def = 5.0e-3; eb_def = 1.8; rsi_def = 0.90; rmet_def = 0.40;
+  } else {
+    throw std::runtime_error("silicide: unknown metal '" + metal + "'");
+  }
+
+  auto material_of = [&](int tag) -> std::string {
+    auto it = st.region_material.find(tag);
+    return it == st.region_material.end() ? "silicon" : it->second;
+  };
+  auto is_this_metal = [&](const std::string& m) {
+    const std::string ml = lower(m);
+    return ml == metal_name ||
+           (metal_name == "nickel" ? ml == "ni" : ml == "ti");
+  };
+  auto is_this_silicide = [&](const std::string& m) {
+    return lower(m) == sil_name;
+  };
+
+  // (b) Layer measurement: z_si_top from remaining "silicon"-tagged cells,
+  // then scan everything above it -- only {metal, this-phase silicide, gas}
+  // are allowed there.
+  const int nc0 = static_cast<int>(st.mesh.cells.size());
+  double z_si_top = -1e300;
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (!is_silicon(material_of(st.mesh.cell_region[ci]))) continue;
+    const auto& cell = st.mesh.cells[ci];
+    for (int k = 0; k < 4; ++k)
+      z_si_top = std::max(z_si_top, st.mesh.nodes[cell[k]].z);
+  }
+  if (z_si_top < -1e299)
+    throw std::runtime_error("silicide: top surface is not " + metal_name +
+                             " on Si");
+
+  bool has_metal = false, has_sil = false;
+  double z_met_min = 1e300, z_met_max = -1e300;
+  double z_sil_min = 1e300, z_sil_max = -1e300;
+  int met_tag = -1;
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (st.mesh.cell_cent[ci].z <= z_si_top) continue;
+    const int tag = st.mesh.cell_region[ci];
+    const std::string mat = material_of(tag);
+    if (lower(mat) == "gas") continue;
+    const auto& cell = st.mesh.cells[ci];
+    double zmin = 1e300, zmax = -1e300;
+    for (int k = 0; k < 4; ++k) {
+      zmin = std::min(zmin, st.mesh.nodes[cell[k]].z);
+      zmax = std::max(zmax, st.mesh.nodes[cell[k]].z);
+    }
+    if (is_this_metal(mat)) {
+      has_metal = true;
+      met_tag = tag;
+      z_met_min = std::min(z_met_min, zmin);
+      z_met_max = std::max(z_met_max, zmax);
+    } else if (is_this_silicide(mat)) {
+      has_sil = true;
+      z_sil_min = std::min(z_sil_min, zmin);
+      z_sil_max = std::max(z_sil_max, zmax);
+    } else {
+      throw std::runtime_error("silicide: top surface is not " + metal_name +
+                               " on Si");
+    }
+  }
+  if (!has_metal)
+    throw std::runtime_error("silicide: top surface is not " + metal_name +
+                             " on Si");
+
+  const double t_m = z_met_max - z_met_min;
+  double x0 = has_sil ? (z_sil_max - z_sil_min) : 0.0;
+  if (x0 < 1e-9) x0 = 0.0;
+  const double z_top_old = z_met_max;
+
+  // (c) Growth law: x^2 = x0^2 + B*t, B = b0*exp(-eb/kT); capped by the
+  // available metal (rmet*dx <= t_m).
+  const auto& P = ParamDB::instance();
+  const double b0 = P.get(pfx + ".b0", b0_def);
+  const double eb = P.get(pfx + ".eb", eb_def);
+  const double rsi = P.get(pfx + ".rsi", rsi_def);
+  const double rmet = P.get(pfx + ".rmet", rmet_def);
+  const double B = b0 * std::exp(-eb / (kBoltzmannEv * temp_k));
+  double x_new = std::sqrt(x0 * x0 + B * time_s);
+  bool capped = false;
+  const double x_cap = x0 + t_m / rmet;
+  if (x_new > x_cap) { x_new = x_cap; capped = true; }
+  const double dx = x_new - x0;
+
+  if (dx <= 0) {
+    if (log)
+      *log << "[silicide] " << metal_name << " -> " << sil_name << " "
+           << fmt("%.6g", temp_k) << " K " << fmt("%.6g", time_s)
+           << " s: no growth, x=" << fmt("%.4g", x0 * 1e4) << " um\n";
+    st.last_temp = temp_k;
+    return x0;
+  }
+
+  // (d) Volume bookkeeping (retag only, no mesh rebuild): growing dx of
+  // silicide consumes rsi*dx of Si and rmet*dx of metal; the surface
+  // recedes by (rsi+rmet-1)*dx (retagged "gas").
+  const double d_si = rsi * dx;
+  const double d_met = rmet * dx;
+  const double d_gas = (rsi + rmet - 1.0) * dx;
+  const double z_if = z_si_top - d_si;
+
+  const int nc = static_cast<int>(st.mesh.cells.size());
+  const auto etags = st.mesh.region_tags();
+  const int max_tag = etags.empty() ? 0
+      : *std::max_element(etags.begin(), etags.end());
+
+  int sil_tag = -1;
+  for (const auto& [t, m] : st.region_material)
+    if (t >= 1000 && lower(m) == sil_name) { sil_tag = t; break; }
+  const bool new_sil_tag = sil_tag < 0;
+  if (new_sil_tag) sil_tag = max_tag + 4000;
+  st.region_material[sil_tag] = sil_name;
+
+  int gas_tag = -1;
+  for (const auto& [t, m] : st.region_material)
+    if (lower(m) == "gas") { gas_tag = t; break; }
+  if (gas_tag < 0) {
+    gas_tag = max_tag + 2000;
+    st.region_material[gas_tag] = "gas";
+  }
+
+  for (int ci = 0; ci < nc; ++ci) {
+    const Vec3& c = st.mesh.cell_cent[ci];
+    if (c.z <= z_if) continue;  // untouched
+    if (c.z <= z_if + x_new) { st.mesh.cell_region[ci] = sil_tag; continue; }
+    if (c.z <= z_top_old - d_gas) { st.mesh.cell_region[ci] = met_tag; continue; }
+    st.mesh.cell_region[ci] = gas_tag;
+  }
+
+  // (e) Field handling: mesh unchanged so no transfer needed. Gas-retagged
+  // cells are zeroed; Si->silicide converted cells keep their dopant
+  // (segregation exchange with SegTable/D_sil happens on the next diffuse).
+  for (auto& [sym, conc] : st.fields)
+    for (int ci = 0; ci < nc; ++ci)
+      if (st.mesh.cell_region[ci] == gas_tag) conc[ci] = 0.0;
+
+  // (f) layer_stack maintenance.
+  if (new_sil_tag) {
+    auto it = std::find_if(st.layer_stack.begin(), st.layer_stack.end(),
+                           [&](const auto& p) { return p.first == met_tag; });
+    st.layer_stack.insert(it, {sil_tag, sil_name});
+  }
+  auto tag_has_cells = [&](int tag) {
+    for (int r : st.mesh.cell_region)
+      if (r == tag) return true;
+    return false;
+  };
+  for (auto it = st.layer_stack.begin(); it != st.layer_stack.end();) {
+    if (!tag_has_cells(it->first)) it = st.layer_stack.erase(it);
+    else ++it;
+  }
+
+  st.last_temp = temp_k;
+
+  if (log)
+    *log << "[silicide] " << metal_name << " -> " << sil_name << " "
+         << fmt("%.6g", temp_k) << " K " << fmt("%.6g", time_s) << " s: x "
+         << fmt("%.4g", x0 * 1e4) << " -> " << fmt("%.4g", x_new * 1e4)
+         << " um (dSi=" << fmt("%.4g", d_si * 1e4) << " um, dMet="
+         << fmt("%.4g", d_met * 1e4) << " um, recede="
+         << fmt("%.4g", d_gas * 1e4) << " um)"
+         << (capped ? ", metal fully consumed" : "") << ", mesh "
+         << st.mesh.cells.size() << " tets\n";
+
+  return x_new;
 }
 
 void add_bc(SimState& st, const std::string& species, int patch, double conc,

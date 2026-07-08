@@ -93,9 +93,12 @@ struct SpeciesField {
 // h=0 (no exchange), m=1 (equal partition); the Si/oxide pair is filled by
 // run()/run_ted() with segregation_h/m(dp, T) per P1-4.
 struct SegTable {
-  double h[5][5] = {};
-  double m[5][5] = {{1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}, {1, 1, 1, 1, 1},
-                    {1, 1, 1, 1, 1}, {1, 1, 1, 1, 1}};
+  double h[kMatCount][kMatCount] = {};
+  double m[kMatCount][kMatCount];
+  SegTable() {
+    for (int i = 0; i < kMatCount; ++i)
+      for (int j = 0; j < kMatCount; ++j) m[i][j] = 1.0;
+  }
 };
 
 // Cell-centered finite-volume dopant diffusion on an unstructured tet mesh.

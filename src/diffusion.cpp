@@ -299,10 +299,14 @@ SegTable make_seg_table(const Dopant& dp, double temp_k, bool has_seg) {
   SegTable t;
   if (has_seg) {
     const double h = segregation_h(dp, temp_k);
-    for (int i = 0; i < 5; ++i)
-      for (int j = i + 1; j < 5; ++j) t.h[i][j] = h;
+    for (int i = 0; i < kMatCount; ++i)
+      for (int j = i + 1; j < kMatCount; ++j) t.h[i][j] = h;
   }
   t.m[kMatSi][kMatOxide] = segregation_m(dp, temp_k);
+  // P3-d: Si/silicide segregation (dose loss into NiSi/TiSi2). The Si/metal
+  // pair is left at m=1 -- irrelevant since kMatMetal's D=0 already blocks
+  // any exchange via the per-face D>0 guard in assemble().
+  t.m[kMatSi][kMatSilicide] = segregation_m_silicide(dp, temp_k);
   return t;
 }
 

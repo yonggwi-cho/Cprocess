@@ -565,6 +565,18 @@ PYBIND11_MODULE(_cprocess, m) {
       "Blanket thermal oxidation (Deal-Grove). time in s, temp in K.\n"
       "Returns a log string.");
 
+  m.def("proc_silicide",
+      [](SimState& st, const std::string& metal, double temp_k,
+         double time_s) {
+        std::ostringstream log;
+        proc::silicide(st, metal, temp_k, time_s, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("metal"), py::arg("temp_k"),
+      py::arg("time_s"),
+      "Blanket silicidation of a deposited metal film. K/s core units.\n"
+      "Returns a log string.");
+
   m.def("proc_oxidize_2d",
       [](SimState& st, double time_s, double temp_k, bool wet) {
         std::ostringstream log;

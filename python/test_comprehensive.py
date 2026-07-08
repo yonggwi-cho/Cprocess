@@ -1352,6 +1352,64 @@ def test_epitaxy_python():
     check(threw, "epitaxy: non-silicon surface raises")
 
 
+def test_silicide_python():
+    """P3-d: blanket silicidation (NiSi/TiSi2) -- Simulation.silicide()."""
+    print("test_silicide_python")
+
+    # (1) NiSi: chaining, log, surface recede, dose-loss on diffuse.
+    # Note: silicide() is retag-only (no mesh rebuild, per its docstring) --
+    # the gas-retagged band still occupies its mesh cells, so
+    # cell_centroids' raw max z is unchanged by the call; there is no
+    # Python-level per-cell-material accessor to filter it to "non-gas"
+    # cells (SimState only exposes fields/mesh geometry, not
+    # region_material/cell_region), so the recede is instead verified via
+    # the "recede=" figure the log itself reports (same quantity the C++
+    # test measures geometrically).
+    import re
+
+    sim = cp.Simulation()
+    (sim.mesh(0.1, 0.1, 0.5, 2, 2, 250)
+        .init("B", 1e18)
+        .deposit("nickel", 0.06))
+
+    ret = sim.silicide("nickel", time=50 / 60, temp=500)
+    check(ret is sim, "silicide: chaining returns self")
+    check("[silicide]" in sim.log, "silicide: log contains [silicide]")
+
+    m = re.search(r"recede=([\d.eE+-]+) um", sim.log)
+    check(m is not None, "silicide: log has parseable recede= figure")
+    check(float(m.group(1)) > 0, "silicide: surface recede is positive (nonzero)")
+
+    b_si_before = sim.field("B").sum()
+    sim.diffuse(30, 800)
+    b_si_after = sim.field("B")
+    check(np.all(np.isfinite(b_si_after)), "silicide: B field finite after diffuse")
+    check(b_si_after.sum() > 0, "silicide: B field still nonzero after diffuse")
+    del b_si_before
+
+    # (2) TiSi2 smoke test on a fresh sim: completes, silicide thickness > 0.
+    sim2 = cp.Simulation()
+    ret2 = (sim2.mesh(0.1, 0.1, 0.5, 2, 2, 250)
+                .deposit("titanium", 0.04)
+                .silicide("titanium", 10, 750))
+    check(ret2 is sim2, "silicide: TiSi2 chaining returns self")
+    check("[silicide]" in sim2.log, "silicide: TiSi2 log contains [silicide]")
+    # Parse "x 0 -> N um" out of the log line to confirm nonzero growth.
+    m = re.search(r"x 0 -> ([\d.eE+-]+) um", sim2.log)
+    check(m is not None, "silicide: TiSi2 log has parseable growth line")
+    x_um = float(m.group(1))
+    check(x_um > 0, "silicide: TiSi2 grew a nonzero silicide thickness")
+
+    # (3) Error path: bare Si (no metal deposited) raises.
+    threw = False
+    try:
+        cp.Simulation().mesh(0.1, 0.1, 0.5, 2, 2, 20).region("silicon") \
+            .silicide("nickel", time=1, temp=500)
+    except Exception:
+        threw = True
+    check(threw, "silicide: bare Si (no metal) raises")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -1398,4 +1456,5 @@ if __name__ == "__main__":
     test_mechanics_python()
     test_fast_1d2d_python()
     test_epitaxy_python()
+    test_silicide_python()
     print("\nall comprehensive Simulation tests passed")

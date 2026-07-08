@@ -241,6 +241,22 @@ void cmd_oxidize(SimState& st, const Cmd& c, std::ostream& log) {
   proc::oxidize(st, time_s, temp_k, ambient == "wet", &log);
 }
 
+void cmd_deposit(SimState& st, const Cmd& c, std::ostream& log) {
+  const std::string material = c.str("material");
+  const double thickness_cm = c.num("thickness", Unit::length);
+  proc::deposit(st, material, thickness_cm, 2, {}, &log);
+}
+
+void cmd_silicide(SimState& st, const Cmd& c, std::ostream& log) {
+  const std::string metal = lower(c.str("metal"));
+  if (metal != "nickel" && metal != "ni" && metal != "titanium" &&
+      metal != "ti")
+    c.fail("metal must be nickel|ni|titanium|ti");
+  const double time_s = c.num("time", Unit::time);
+  const double temp_k = c.num("temp", Unit::temp);
+  proc::silicide(st, metal, temp_k, time_s, &log);
+}
+
 void cmd_epitaxy(SimState& st, const Cmd& c, std::ostream& log) {
   const double thickness_cm = c.num("thickness", Unit::length);
   const double temp_k = c.num("temp", Unit::temp);
@@ -318,6 +334,8 @@ void run_deck(std::istream& in, SimState& st, std::ostream& log) {
     else if (c.name == "diffuse") cmd_diffuse(st, c, log);
     else if (c.name == "oxidize") cmd_oxidize(st, c, log);
     else if (c.name == "epitaxy") cmd_epitaxy(st, c, log);
+    else if (c.name == "deposit") cmd_deposit(st, c, log);
+    else if (c.name == "silicide") cmd_silicide(st, c, log);
     else if (c.name == "save") cmd_save(st, c, log);
     else if (c.name == "print") cmd_print(st, c, log);
     else if (c.name == "stop") break;

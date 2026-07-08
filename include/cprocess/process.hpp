@@ -205,6 +205,19 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
 double oxidize_2d(SimState& st, double time_s, double temp_k, bool wet = false,
                   std::ostream* log = nullptr);
 
+// Blanket silicidation (P3-d): converts a previously deposited blanket
+// metal film ("nickel" or "titanium") on the exposed Si top surface into
+// its silicide ("nisi" / "tisi2") by diffusion-limited growth
+//   x^2 = x0^2 + B(T)*time_s,  B = b0*exp(-eb/kT)   (ParamDB, per phase).
+// Volume bookkeeping (all retag-only, no mesh rebuild -- the surface
+// *recedes* by (rsi+rmet-1)*dx): growing dx of silicide consumes
+// rsi*dx of Si (interface moves down) and rmet*dx of metal; the excess
+// band at the top is retagged "gas". Growth stops when the metal is
+// exhausted (x capped at x0 + t_metal/rmet). Returns the new total
+// silicide thickness in cm. metal: "nickel"|"ni"|"titanium"|"ti".
+double silicide(SimState& st, const std::string& metal, double temp_k,
+                double time_s, std::ostream* log = nullptr);
+
 // Linear-elastic FEM mechanics solve (P2-6): builds a per-cell eigenstrain
 // load from thermal mismatch (alpha_m * dT, dT = temp_k - 300K) and intrinsic
 // film stress (ParamDB "mech.sigma0.<material>", isotropic), applies

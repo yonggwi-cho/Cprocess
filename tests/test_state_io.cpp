@@ -210,11 +210,50 @@ static void test_errors() {
   std::printf("  ok: error cases behave as specified\n");
 }
 
+// ---------------------------------------------------------------------------
+// Test 5 (P3-d): "nickel"/"nisi" region_material strings survive a roundtrip.
+// ---------------------------------------------------------------------------
+static void test_roundtrip_silicide_materials() {
+  std::printf("test_roundtrip_silicide_materials\n");
+  std::ostringstream log;
+  SimState st;
+  proc::mesh_box(st, 0, 0.1e-4, 0, 0.1e-4, 0, 0.5e-4, 2, 2, 250, &log);
+  proc::set_region(st, "silicon", -1, &log);
+  proc::deposit(st, "nickel", 0.06e-4, 2, {}, &log);
+  proc::silicide(st, "nickel", 773.15, 50, &log);
+
+  bool has_nickel = false, has_nisi = false;
+  for (const auto& [tag, mat] : st.region_material) {
+    if (mat == "nickel") has_nickel = true;
+    if (mat == "nisi") has_nisi = true;
+  }
+  CHECK(has_nickel);
+  CHECK(has_nisi);
+
+  proc::save_state(st, kPath, &log);
+  SimState ld;
+  proc::load_state(ld, kPath, &log);
+
+  CHECK(ld.region_material == st.region_material);
+  CHECK(ld.mesh.cell_region == st.mesh.cell_region);
+  bool ld_has_nickel = false, ld_has_nisi = false;
+  for (const auto& [tag, mat] : ld.region_material) {
+    if (mat == "nickel") ld_has_nickel = true;
+    if (mat == "nisi") ld_has_nisi = true;
+  }
+  CHECK(ld_has_nickel);
+  CHECK(ld_has_nisi);
+
+  std::remove(kPath);
+  std::printf("  ok: nickel/nisi region_material strings survive roundtrip\n");
+}
+
 int main() {
   test_roundtrip_bitexact();
   test_reload_then_diffuse_matches();
   test_profile1d();
   test_errors();
+  test_roundtrip_silicide_materials();
   std::printf("\nall state_io tests passed\n");
   return 0;
 }

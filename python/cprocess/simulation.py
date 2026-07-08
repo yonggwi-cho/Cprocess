@@ -347,6 +347,18 @@ class Simulation:
                                       _celsius_to_k(temp), bool(wet)))
         return self
 
+    def silicide(self, metal: str, time: float, temp: float) -> "Simulation":
+        """Silicidation of a deposited blanket metal film (P3-d).
+
+        metal: 'nickel' or 'titanium' (deposit it first). time in minutes,
+        temp in Celsius. Diffusion-limited growth x^2 = B*t; consumes
+        silicon (NiSi: 0.82, TiSi2: 0.90 of the silicide thickness) and
+        metal, receding the surface. Stops when the metal is exhausted.
+        """
+        self._emit(_c.proc_silicide(self._st, metal,
+                                    _celsius_to_k(temp), time * MIN))
+        return self
+
     def mechanics(self, temp: float, time: float) -> "Simulation":
         """Linear-elastic FEM mechanics solve (P2-6).
 
