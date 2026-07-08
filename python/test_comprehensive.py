@@ -1295,6 +1295,39 @@ def test_mechanics_python():
           "mechanics: heating puts the Si surface just below the film in compression")
 
 
+def test_fast_1d2d_python():
+    """P3-g: mesh1d() convenience method and MC lateral_wrap."""
+    sim = cp.Simulation()
+    sim.mesh1d(0.5, 50)
+    check(sim.n_cells == 300, "mesh1d: 0.5um/50 layers -> 300 cells (Kuhn 6-tet)")
+
+    sim.init("B", 0.0)
+    atoms = sim.implant("B", 1e14, energy=30)
+    check(atoms > 0, "mesh1d: chainable init() + implant() deposits atoms")
+
+    # Existence-level check only -- numerical accuracy of the 1D degenerate
+    # mesh vs. a full 3D mesh is covered by tests/test_fast_1d2d.cpp's
+    # test_1d_vs_3d_profile.
+    sim.diffuse(temp=1000, time=10)
+    z, c = sim.profile("B", 0.0, 0.0)
+    check(len(z) > 0, "mesh1d: depth profile is non-empty after diffuse")
+
+    sim2 = cp.Simulation()
+    sim2.mesh(0.01, 0.01, 0.5, 4, 4, 50)
+    sim2.init("B", 0.0)
+    r = sim2.implant("B", 1e14, energy=30, mc=True, ions=20000,
+                      window=(0, 0.01, 0, 0.01), lateral_wrap=True)
+    check(r.stats.out_of_domain == 0,
+          "lateral_wrap: MC implant loses zero ions out-of-domain when wrapped")
+
+    threw = False
+    try:
+        sim2.implant("B", 1e14, energy=30, mc=False, lateral_wrap=True)
+    except ValueError:
+        threw = True
+    check(threw, "lateral_wrap: analytic implant (mc=False) rejects lateral_wrap")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -1339,4 +1372,5 @@ if __name__ == "__main__":
     test_export_device_python()
     test_load_gds_python()
     test_mechanics_python()
+    test_fast_1d2d_python()
     print("\nall comprehensive Simulation tests passed")

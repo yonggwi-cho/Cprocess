@@ -58,7 +58,8 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                           double rotation_deg, unsigned long long seed,
                           int threads, bool channeling, bool has_window,
                           double x1, double x2, double y1, double y2,
-                          bool seed_damage = false, std::ostream* log = nullptr);
+                          bool lateral_wrap = false, bool seed_damage = false,
+                          std::ostream* log = nullptr);
 
 // Photoresist lithography.
 void photo(SimState& st, double thickness, int nz_add = 4,

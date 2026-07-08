@@ -98,6 +98,16 @@ class Simulation:
                    int(nx), int(ny), int(nz)))
         return self
 
+    def mesh1d(self, z: float, nz: int,
+               lateral: float = 0.0) -> "Simulation":
+        """1D fast-mode mesh: nx=ny=1, depth z [um], nz cells.
+
+        `lateral` is the x/y extent [um]; default 0 -> one cell height
+        z/nz (keeps tet aspect ratio ~1). Delegates to mesh().
+        """
+        lat = lateral if lateral > 0 else z / nz
+        return self.mesh(x=lat, y=lat, z=z, nx=1, ny=1, nz=nz)
+
     def mesh_gmsh(self, path: str, scale_um: float = 1.0) -> "Simulation":
         """Load a Gmsh mesh; `scale_um` converts file units to micrometres."""
         self._emit(_c.proc_mesh_gmsh(self._st, path, scale_um * UM))
@@ -127,7 +137,8 @@ class Simulation:
                 rp: float = 0.0, drp: float = 0.0, drl: float = 0.0,
                 ions: int = 100000, tilt: float = 0.0, rotation: float = 0.0,
                 seed: int = 1, threads: int = 0, channeling: bool = False,
-                window=None, damage: bool = False, profile: str = "gauss"):
+                window=None, damage: bool = False, profile: str = "gauss",
+                lateral_wrap: bool = False):
         """Ion implant.
 
         dose [cm^-2], energy [keV]. `mc=True` selects Monte-Carlo BCA, otherwise
@@ -145,16 +156,24 @@ class Simulation:
         implant only; requires `energy=`, not rp/drp) built from the 4-moment
         table (Rp, dRp, gamma, beta); it falls back to Gaussian when the
         moments don't satisfy the Type-IV validity condition.
+        `lateral_wrap=True` (MC only) periodically wraps ions that exit the
+        domain laterally instead of counting them as out_of_domain — useful
+        for narrow 1D/2D fast-mode meshes (see mesh1d()) with a window that
+        spans the whole domain. Default off preserves legacy behaviour;
+        blanket-beam MC implants (no window) already wrap unconditionally.
         """
         if mc and profile != "gauss":
             raise ValueError("profile applies to the analytic implant only")
+        if not mc and lateral_wrap:
+            raise ValueError("lateral_wrap applies to the MC implant only (mc=True)")
         has_window = window is not None
         x1, x2, y1, y2 = (window if has_window else (0, 0, 0, 0))
         if mc:
             stats, log = _c.proc_implant_mc(self._st, species, float(dose),
                 float(energy), int(ions), float(tilt), float(rotation),
                 int(seed), int(threads), bool(channeling), has_window,
-                x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(damage))
+                x1 * UM, x2 * UM, y1 * UM, y2 * UM, bool(lateral_wrap),
+                bool(damage))
             self._emit(log)
             return ImplantResult(stats, log)
         atoms, log = _c.proc_implant_gauss(self._st, species, float(dose),

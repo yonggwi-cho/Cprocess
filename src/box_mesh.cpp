@@ -9,7 +9,9 @@ namespace cp {
 // Conforming Kuhn subdivision: each hex is cut into the 6 tets
 // {v0, v0+e_p1, v0+e_p1+e_p2, v7} over the permutations of (x,y,z); all
 // tets share the main diagonal v0-v7, so adjacent hexes match on the
-// shared quad diagonals.
+// shared quad diagonals. Supports nx=1/ny=1 (1D/2D fast mode, P3-g): a
+// single cell layer in x and/or y does not degenerate the Kuhn split.
+
 Mesh make_box_mesh(double x0, double x1, double y0, double y1, double z0,
                    double z1, int nx, int ny, int nz) {
   if (nx < 1 || ny < 1 || nz < 1)

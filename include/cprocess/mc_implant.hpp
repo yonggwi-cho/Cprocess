@@ -78,6 +78,10 @@ struct McImplantParams {
   double rotation_deg = 0;  // azimuth of the tilt
   bool has_window = false;  // source restricted to [x1,x2]x[y1,y2]
   double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+  // Opt-in: wrap lateral exits periodically even in window mode. Default off
+  // preserves legacy out_of_domain behaviour bit-for-bit. Blanket-beam mode
+  // (has_window=false) already wraps unconditionally regardless of this flag.
+  bool lateral_wrap = false;
   long long ions = 100000;
   int threads = 0;          // 0 = hardware concurrency
   std::uint64_t seed = 1;

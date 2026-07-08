@@ -305,7 +305,8 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                           double rotation_deg, unsigned long long seed,
                           int threads, bool channeling, bool has_window,
                           double x1, double x2, double y1, double y2,
-                          bool seed_damage, std::ostream* log) {
+                          bool lateral_wrap, bool seed_damage,
+                          std::ostream* log) {
   need_mesh(st);
   const Dopant* dop = dopant_or_throw(species);
   auto& f = st.fields[dop->symbol];
@@ -325,6 +326,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
   p.channeling = channeling;
   p.has_window = has_window;
   p.x1 = x1; p.x2 = x2; p.y1 = y1; p.y2 = y2;
+  p.lateral_wrap = lateral_wrap;
 
   // Physical resist stack present: transport through the full stack and
   // transfer the silicon profile back onto the working mesh.

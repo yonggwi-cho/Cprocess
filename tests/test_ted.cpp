@@ -130,7 +130,7 @@ int main() {
     proc::set_region(st, "silicon", -1);
     proc::implant_mc(st, "B", 1e14, 50.0, 200000, 0.0, 0.0, 1, 1,
                      /*channeling=*/true, false, 0, 0, 0, 0,
-                     /*seed_damage=*/true);
+                     /*lateral_wrap=*/false, /*seed_damage=*/true);
     CHECK(st.fields.count("I") == 1);
     const double dI = mean_depth(st, st.fields.at("I"));
     const double dB = mean_depth(st, st.fields.at("B"));
@@ -147,7 +147,7 @@ int main() {
       proc::set_region(st, "silicon", -1);
       proc::implant_mc(st, "B", dose, 50.0, 200000, 0.0, 0.0, 1, 1,
                        /*channeling=*/true, false, 0, 0, 0, 0,
-                       /*seed_damage=*/true);
+                       /*lateral_wrap=*/false, /*seed_damage=*/true);
       double sum = 0;
       const auto& I = st.fields.at("I");
       for (std::size_t i = 0; i < I.size(); ++i) sum += I[i] * st.mesh.cell_vol[i];
@@ -168,7 +168,7 @@ int main() {
     proc::set_region(st_eq, "silicon", -1);
     proc::implant_mc(st_eq, "B", 1e14, 20.0, 100000, 0.0, 0.0, 1, 1,
                      /*channeling=*/true, false, 0, 0, 0, 0,
-                     /*seed_damage=*/false);
+                     /*lateral_wrap=*/false, /*seed_damage=*/false);
     const double s0_eq = profile_spread(st_eq, st_eq.fields.at("B"));
     proc::diffuse(st_eq, base);
     const double spread_eq_mc = profile_spread(st_eq, st_eq.fields.at("B"));
@@ -177,7 +177,7 @@ int main() {
     proc::set_region(st_ted, "silicon", -1);
     proc::implant_mc(st_ted, "B", 1e14, 20.0, 100000, 0.0, 0.0, 1, 1,
                      /*channeling=*/true, false, 0, 0, 0, 0,
-                     /*seed_damage=*/true);
+                     /*lateral_wrap=*/false, /*seed_damage=*/true);
     const double s0_ted = profile_spread(st_ted, st_ted.fields.at("B"));
     proc::diffuse_ted(st_ted, base);
     const double spread_ted_mc = profile_spread(st_ted, st_ted.fields.at("B"));
@@ -194,7 +194,7 @@ int main() {
     proc::set_region(st, "silicon", -1);
     proc::implant_mc(st, "B", 1e16, 50.0, 100000, 0.0, 0.0, 1, 1,
                      /*channeling=*/true, false, 0, 0, 0, 0,
-                     /*seed_damage=*/true);
+                     /*lateral_wrap=*/false, /*seed_damage=*/true);
     double maxI = 0;
     for (double v : st.fields.at("I")) maxI = std::max(maxI, v);
     std::printf("mc damage cap: max(I)=%.4g cm^-3 (cap=%.4g)\n",
@@ -209,7 +209,7 @@ int main() {
     proc::set_region(st, "silicon", -1);
     proc::implant_mc(st, "B", 1e14, 50.0, 50000, 0.0, 0.0, 1, 1,
                      /*channeling=*/false, false, 0, 0, 0, 0,
-                     /*seed_damage=*/true);
+                     /*lateral_wrap=*/false, /*seed_damage=*/true);
     CHECK(st.fields.count("I") == 1);
     double Ipeak = 0;
     for (double v : st.fields.at("I")) Ipeak = std::max(Ipeak, v);

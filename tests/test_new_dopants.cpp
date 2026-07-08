@@ -68,7 +68,9 @@ int main() {
     setup_mesh(st);
     McImplantStats s = proc::implant_mc(st, sym, 1e14, 30.0, 20000, 0.0, 0.0,
                                         12345ULL, 1, /*channeling=*/false,
-                                        false, 0, 0, 0, 0, /*damage=*/false);
+                                        false, 0, 0, 0, 0,
+                                        /*lateral_wrap=*/false,
+                                        /*damage=*/false);
     std::printf("new_dopants: %s MC deposited=%lld\n", sym, s.deposited);
     CHECK(s.deposited > 0);
   }

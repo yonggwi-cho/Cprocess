@@ -172,7 +172,7 @@ void cmd_implant(SimState& st, const Cmd& c, std::ostream& log) {
         static_cast<unsigned long long>(c.num_or("seed", Unit::none, 1)),
         static_cast<int>(c.num_or("threads", Unit::none, 0)),
         c.flag_or("channeling", false), has_window, x1, x2, y1, y2,
-        c.flag_or("damage", false), &log);
+        c.flag_or("lateral_wrap", false), c.flag_or("damage", false), &log);
     return;
   }
   if (method != "gauss" && method != "gaussian" && method != "analytic")

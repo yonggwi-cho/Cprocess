@@ -63,13 +63,14 @@ static void test_full_flow() {
   // MC implant without window.
   McImplantStats mc1 = proc::implant_mc(st, "As", 2e13, 80.0, 20000,
                                          0, 0, 42, 0, false,
-                                         false, 0, 0, 0, 0, &log);
+                                         false, 0, 0, 0, 0, false, false, &log);
   CHECK(mc1.deposited > 0);
 
   // MC implant with window (x in [0, 0.2 µm]).
   McImplantStats mc2 = proc::implant_mc(st, "P", 5e13, 30.0, 20000,
                                          0, 0, 7, 0, false,
-                                         true, 0, 0.2e-4, 0, 0.4e-4, &log);
+                                         true, 0, 0.2e-4, 0, 0.4e-4, false,
+                                         false, &log);
   CHECK(mc2.deposited > 0);
 
   // Diffuse.
@@ -110,7 +111,7 @@ static void test_photo_flow() {
 
   McImplantStats mc = proc::implant_mc(st, "P", 5e14, 30.0, 40000,
                                         0, 0, 17, 0, false,
-                                        false, 0, 0, 0, 0, &log);
+                                        false, 0, 0, 0, 0, false, false, &log);
   CHECK(mc.deposited > 0);
 
   proc::strip(st, &log);

@@ -445,11 +445,11 @@ PYBIND11_MODULE(_cprocess, m) {
          double energy_kev, long long ions, double tilt_deg, double rotation_deg,
          unsigned long long seed, int threads, bool channeling,
          bool has_window, double x1, double x2, double y1, double y2,
-         bool damage) {
+         bool lateral_wrap, bool damage) {
         std::ostringstream log;
         const McImplantStats s = proc::implant_mc(st, species, dose, energy_kev,
             ions, tilt_deg, rotation_deg, seed, threads, channeling,
-            has_window, x1, x2, y1, y2, damage, &log);
+            has_window, x1, x2, y1, y2, lateral_wrap, damage, &log);
         return py::make_tuple(s, log.str());
       },
       py::arg("state"), py::arg("species"), py::arg("dose"),
@@ -457,7 +457,8 @@ PYBIND11_MODULE(_cprocess, m) {
       py::arg("tilt_deg") = 0.0, py::arg("rotation_deg") = 0.0,
       py::arg("seed") = 1, py::arg("threads") = 0, py::arg("channeling") = false,
       py::arg("has_window") = false, py::arg("x1") = 0.0, py::arg("x2") = 0.0,
-      py::arg("y1") = 0.0, py::arg("y2") = 0.0, py::arg("damage") = false);
+      py::arg("y1") = 0.0, py::arg("y2") = 0.0,
+      py::arg("lateral_wrap") = false, py::arg("damage") = false);
 
   m.def("proc_photo",
       [](SimState& st, double thickness, int nz_add) {

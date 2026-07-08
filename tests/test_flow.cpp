@@ -46,7 +46,7 @@ static void test_full_front_end_flow() {
 
   proc::implant_mc(st, "B", 2e12, 40.0, 20000, 0, 0, 123, 0,
                     /*channeling=*/true, false, 0, 0, 0, 0,
-                    /*damage=*/true, &log);
+                    /*lateral_wrap=*/false, /*damage=*/true, &log);
   CHECK(st.fields.count("I") > 0);
   double i_after_first = 0;
   for (double v : st.fields.at("I")) i_after_first = std::max(i_after_first, v);
@@ -65,7 +65,7 @@ static void test_full_front_end_flow() {
   proc::mask_polygon(st, hex, &log);
 
   proc::implant_mc(st, "P", 1e15, 30.0, 30000, 0, 0, 7, 0, false, false, 0, 0,
-                    0, 0, false, &log);
+                    0, 0, false, false, &log);
 
   proc::strip(st, &log);
   CHECK(!st.has_stack);
@@ -205,7 +205,8 @@ static SimState run_mc_amorphous(int nthreads, unsigned long long seed) {
   proc::mesh_box(st, 0, 0.4e-4, 0, 0.4e-4, 0, 0.4e-4, 5, 5, 5, &log);
   proc::set_region(st, "silicon", -1, &log);
   proc::implant_mc(st, "B", 1e13, 40.0, 20000, 0, 0, seed, nthreads,
-                    /*channeling=*/false, false, 0, 0, 0, 0, false, &log);
+                    /*channeling=*/false, false, 0, 0, 0, 0, false, false,
+                    &log);
   return st;
 }
 #endif

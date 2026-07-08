@@ -530,7 +530,7 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   w.default_mat = 0;
 
   w.lo=bb.lo; w.hi=bb.hi;
-  w.wrap = !p.has_window;
+  w.wrap = !p.has_window || p.lateral_wrap;
   w.sx1=p.has_window?p.x1:bb.lo.x; w.sx2=p.has_window?p.x2:bb.hi.x;
   w.sy1=p.has_window?p.y1:bb.lo.y; w.sy2=p.has_window?p.y2:bb.hi.y;
   const double tilt=p.tilt_deg*M_PI/180.0, rot=p.rotation_deg*M_PI/180.0;
