@@ -241,6 +241,22 @@ void cmd_oxidize(SimState& st, const Cmd& c, std::ostream& log) {
   proc::oxidize(st, time_s, temp_k, ambient == "wet", &log);
 }
 
+void cmd_epitaxy(SimState& st, const Cmd& c, std::ostream& log) {
+  const double thickness_cm = c.num("thickness", Unit::length);
+  const double temp_k = c.num("temp", Unit::temp);
+  const double time_s = c.num("time", Unit::time);
+  // The deck only supports a single dopant species (species=/conc= pair);
+  // multi-species in-situ doping is Python-only (Simulation.epitaxy's
+  // doping={...} dict).
+  if (c.has("species") != c.has("conc"))
+    c.fail("species= and conc= must both be given, or neither");
+  std::map<std::string, double> doping;
+  if (c.has("species"))
+    doping[c.str("species")] = c.num("conc", Unit::none);
+  proc::epitaxy(st, thickness_cm, temp_k, time_s, doping,
+               c.flag_or("anneal", true), &log);
+}
+
 void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
   proc::save(st, c.has("file") ? c.str("file") : "out.vtu", &log);
 }
@@ -301,6 +317,7 @@ void run_deck(std::istream& in, SimState& st, std::ostream& log) {
     else if (c.name == "bc") cmd_bc(st, c, log);
     else if (c.name == "diffuse") cmd_diffuse(st, c, log);
     else if (c.name == "oxidize") cmd_oxidize(st, c, log);
+    else if (c.name == "epitaxy") cmd_epitaxy(st, c, log);
     else if (c.name == "save") cmd_save(st, c, log);
     else if (c.name == "print") cmd_print(st, c, log);
     else if (c.name == "stop") break;

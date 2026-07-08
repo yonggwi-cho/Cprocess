@@ -124,6 +124,19 @@ void etch_rate(SimState& st, const std::map<std::string, double>& rates,
 void deposit_conformal(SimState& st, const std::string& material,
                        double thickness_cm, std::ostream* log = nullptr);
 
+// P3-b: epitaxial growth of `thickness_cm` of silicon on the exposed silicon
+// top surface, with in-situ uniform doping `doping` (species symbol -> cm^-3)
+// in the newly grown cells only. Geometry reuses deposit()'s extend_mesh_exact
+// + retag + layer_stack mechanism with material "silicon". When anneal ==
+// true (default) the growth thermal budget is applied by one automatic
+// proc::diffuse_ted(temp_k, time_s) call after growth, so substrate dopants
+// back-diffuse into the epi layer. No growth-rate model: thickness and time
+// are both caller-given (P3_overview: confirmed policy).
+void epitaxy(SimState& st, double thickness_cm, double temp_k,
+             double time_s,
+             const std::map<std::string, double>& doping = {},
+             bool anneal = true, std::ostream* log = nullptr);
+
 // Dirichlet boundary conditions for diffusion.
 void add_bc(SimState& st, const std::string& species, int patch, double conc,
             std::ostream* log = nullptr);

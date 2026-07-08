@@ -308,6 +308,20 @@ class Simulation:
                                               thickness * UM))
         return self
 
+    def epitaxy(self, thickness: float, temp: float, time: float, *,
+                doping: dict | None = None, anneal: bool = True) -> "Simulation":
+        """Epitaxial silicon growth with in-situ doping.
+
+        thickness in micrometres, temp in Celsius, time in minutes.
+        doping: {species: conc_cm3} set uniformly in the new layer only.
+        anneal=True (default) applies the growth thermal budget as one
+        automatic TED-capable anneal (diffuse_ted) after growth.
+        """
+        self._emit(_c.proc_epitaxy(self._st, thickness * UM,
+                                   _celsius_to_k(temp), time * MIN,
+                                   dict(doping or {}), bool(anneal)))
+        return self
+
     def oxidize(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
         """Blanket thermal oxidation of the exposed silicon top surface.
 

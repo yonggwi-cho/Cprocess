@@ -1328,6 +1328,30 @@ def test_fast_1d2d_python():
     check(threw, "lateral_wrap: analytic implant (mc=False) rejects lateral_wrap")
 
 
+def test_epitaxy_python():
+    """P3-b: epitaxial growth with in-situ doping."""
+    sim = cp.Simulation()
+    sim.mesh(1, 1, 0.5, 4, 4, 5)
+    sim.region("silicon")
+    n0 = sim.n_cells
+
+    ret = sim.epitaxy(0.1, 1000, 5, doping={"B": 1e17}, anneal=True)
+    check(ret is sim, "epitaxy: chaining returns self")
+    check(sim.n_cells > n0, "epitaxy: grows the mesh (n_cells increases)")
+
+    b = sim.field("B")
+    check(np.all(np.isfinite(b)), "epitaxy: B field is finite everywhere")
+    check(np.max(b) > 0, "epitaxy: doped epi layer has nonzero B")
+
+    threw = False
+    try:
+        cp.Simulation().mesh(1, 1, 0.5, 2, 2, 2).region("oxide") \
+            .epitaxy(0.1, 1000, 5, doping={"B": 1e17})
+    except Exception:
+        threw = True
+    check(threw, "epitaxy: non-silicon surface raises")
+
+
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_bc_diffuse()
@@ -1373,4 +1397,5 @@ if __name__ == "__main__":
     test_load_gds_python()
     test_mechanics_python()
     test_fast_1d2d_python()
+    test_epitaxy_python()
     print("\nall comprehensive Simulation tests passed")

@@ -579,6 +579,19 @@ PYBIND11_MODULE(_cprocess, m) {
       "mesh; raises if none is found (use oxidize() for blanket oxidation).\n"
       "time in s, temp in K. Returns a log string.");
 
+  m.def("proc_epitaxy",
+      [](SimState& st, double thickness_cm, double temp_k, double time_s,
+         const std::map<std::string, double>& doping, bool anneal) {
+        std::ostringstream log;
+        proc::epitaxy(st, thickness_cm, temp_k, time_s, doping, anneal, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("thickness_cm"), py::arg("temp_k"),
+      py::arg("time_s"), py::arg("doping") = std::map<std::string, double>{},
+      py::arg("anneal") = true,
+      "Epitaxial Si growth with in-situ doping. cm/K/s core units.\n"
+      "Returns a log string.");
+
   m.def("proc_mechanics",
       [](SimState& st, double temp_k, double dt_s) {
         std::ostringstream log;

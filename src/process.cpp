@@ -1160,6 +1160,98 @@ void deposit_conformal(SimState& st, const std::string& material,
          << deposited << " cells (including sidewalls)\n";
 }
 
+// P3-b: epitaxial Si growth (see process.hpp for full contract).
+void epitaxy(SimState& st, double thickness_cm, double temp_k,
+             double time_s, const std::map<std::string, double>& doping,
+             bool anneal, std::ostream* log) {
+  need_mesh(st);
+  if (thickness_cm <= 0)
+    throw std::runtime_error("epitaxy: thickness must be > 0");
+  if (time_s <= 0) throw std::runtime_error("epitaxy: time_s must be > 0");
+  if (st.has_stack)
+    throw std::runtime_error("epitaxy: strip resist first");
+
+  // Fail fast (before any geometry change) on unknown dopant species, and
+  // on negative concentrations.
+  for (const auto& [sym, conc] : doping) {
+    dopant_or_throw(sym);
+    if (conc < 0)
+      throw std::runtime_error("epitaxy: doping concentration must be >= 0");
+  }
+
+  // The exposed top surface must be bare silicon -- same scan pattern as
+  // oxidize()'s surface-material check (L1184-1201 above): consider every
+  // cell within one cell-height of the top of the bbox.
+  auto material_of = [&](int tag) -> std::string {
+    auto it = st.region_material.find(tag);
+    return it == st.region_material.end() ? "silicon" : it->second;
+  };
+  const BBox bb0 = st.mesh.bbox();
+  const double z_top = bb0.hi.z;
+  const auto [nx0, ny0, nz0] = infer_box_dims(st.mesh);
+  const double h = (bb0.hi.z - bb0.lo.z) / std::max(1, nz0);
+  const int nc0 = static_cast<int>(st.mesh.cells.size());
+  for (int ci = 0; ci < nc0; ++ci) {
+    if (st.mesh.cell_cent[ci].z <= z_top - h) continue;
+    if (!is_silicon(material_of(st.mesh.cell_region[ci])))
+      throw std::runtime_error("epitaxy: top surface is not silicon");
+  }
+
+  // Growth: reuse deposit()'s geometry mechanism (extend_mesh_exact +
+  // retag + layer_stack), material "silicon". Suppress deposit's own log
+  // line -- epitaxy emits a single summary line instead.
+  const int nz_add = std::max(1, static_cast<int>(std::round(thickness_cm / h)));
+  deposit(st, "silicon", thickness_cm, nz_add, {}, nullptr);
+  const int epi_tag = st.layer_stack.front().first;
+
+  // In-situ uniform doping of the newly grown cells only.
+  for (const auto& [sym, conc] : doping) {
+    const Dopant* d = dopant_or_throw(sym);
+    auto& f = st.fields[d->symbol];
+    f.resize(st.mesh.cells.size(), 0.0);
+    for (std::size_t i = 0; i < f.size(); ++i)
+      if (st.mesh.cell_region[i] == epi_tag) f[i] = conc;
+  }
+
+  // Growth thermal budget: one automatic diffuse_ted call so substrate
+  // dopants back-diffuse into the epi layer (P3_overview: confirmed policy,
+  // no oxidize-style sub-step splitting). diffuse_ted degrades gracefully
+  // (no-op) when there are no dopant fields, and to a plain equilibrium
+  // anneal when "I" is absent/zero, so it is always safe to call.
+  if (anneal) {
+    DiffuseOpts opts;
+    opts.temp = temp_k;
+    opts.time = time_s;
+    opts.verbosity = 0;
+    // Same relaxation as oxidize()'s OED path (P2-3): the default
+    // lin_rtol=1e-10/lin_maxit=2000 (tuned for plain anneals) does not
+    // reliably converge right after a fresh material-interface retag; loosen
+    // both.
+    opts.lin_maxit = 5000;
+    opts.lin_rtol = 1e-8;
+    diffuse_ted(st, opts, log);
+  }
+
+  st.last_temp = temp_k;
+
+  if (log) {
+    *log << "[epitaxy] " << fmt("%.4g", thickness_cm * 1e4) << " um Si @ "
+         << fmt("%.6g", temp_k) << " K " << fmt("%.6g", time_s) << " s, doping: ";
+    if (doping.empty()) {
+      *log << "undoped";
+    } else {
+      bool first = true;
+      for (const auto& [sym, conc] : doping) {
+        if (!first) *log << ",";
+        first = false;
+        *log << sym << "=" << fmt("%.4g", conc);
+      }
+    }
+    *log << ", anneal=" << (anneal ? "on" : "off") << ", mesh now "
+         << st.mesh.cells.size() << " tets\n";
+  }
+}
+
 namespace {
 bool is_oxide(const std::string& mat) {
   const std::string m = lower(mat);
