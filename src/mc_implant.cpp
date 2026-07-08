@@ -3,8 +3,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <random>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #ifdef CPROCESS_MPI
@@ -152,6 +154,25 @@ struct ScatterTable {
 
 const ScatterTable& scatter_table() { static const ScatterTable T; return T; }
 
+// Cache of per-(dopant Z1, target-component Z2) scatter tables. Under the
+// universal ZBL potential every entry is numerically identical to
+// scatter_table() (the reduced-quantity table itself has no Z dependence —
+// see mc::sin2_half_theta), but the cache structure is kept as the insertion
+// point for a future per-pair potential. Built single-threaded in
+// apply_mc_implant() before the worker loop is spawned; read-only afterwards,
+// so parallel access via pointer needs no locking.
+std::map<std::pair<int,int>, ScatterTable>& scatter_cache() {
+  static std::map<std::pair<int,int>, ScatterTable> cache;
+  return cache;
+}
+const ScatterTable& get_scatter_table(int z1, int z2) {
+  auto& cache = scatter_cache();
+  auto key = std::make_pair(z1, z2);
+  auto it = cache.find(key);
+  if (it == cache.end()) it = cache.emplace(key, ScatterTable()).first;
+  return it->second;
+}
+
 }  // namespace
 
 namespace mc {
@@ -180,7 +201,17 @@ TargetMaterial target_photoresist() {
 TargetMaterial target_oxide() {
   // SiO2, density 2.2 g/cm^3, 3 atoms per 60 g/mol -> 20 g/mol per atom.
   // Effective Z = (14+8+8)/3 ~ 10, M ~ 20; N = 2.2/20 * 6.022e23.
-  return {"SiO2", 10, 20.0, 6.62e22, false};
+  // True compound BCA: Si and O collision partners drawn per number fraction.
+  TargetMaterial t{"SiO2", 10, 20.0, 6.62e22, false};
+  t.comp = {{14, 28.086, 1.0/3.0}, {8, 15.999, 2.0/3.0}};
+  return t;
+}
+TargetMaterial target_nitride() {
+  // Si3N4, density 3.1 g/cm^3, 7 atoms per 140.28 g/mol -> N = rho/M_mol*N_A.
+  // Effective Z = (3*14+4*7)/7 = 10, M = 140.28/7 ~ 20.04.
+  TargetMaterial t{"Si3N4", 10, 20.04, 9.32e22, false};
+  t.comp = {{14, 28.086, 3.0/7.0}, {7, 14.007, 4.0/7.0}};
+  return t;
 }
 TargetMaterial target_vacuum() {
   // ~1000x rarefied air: large free flight, negligible stopping.
@@ -266,28 +297,80 @@ struct DamageStore {
 // Walk parameters and ion transport
 // ---------------------------------------------------------------------------
 
+// Lindhard-Scharff electronic-stopping coefficient for dopant (z1,m1) in a
+// target component of atomic number z2 (used both by the legacy single-
+// element path and the Bragg-rule weighted sum below).
+double kls_coeff(int z1, double m1, int z2) {
+  return 3.83e-15*std::pow(z1,7.0/6.0)*z2/
+      (std::pow(std::pow(z1,2.0/3.0)+std::pow(z2,2.0/3.0),1.5)*std::sqrt(m1));
+}
+
+// Precomputed ion-in-(target component) nuclear-scattering constants for one
+// (dopant, component) pair.
+struct CompConstants {
+  double inv_a = 0, eps_per_ev = 0, tmax_fac = 0, mass_ratio = 0;
+  const ScatterTable* table = nullptr;  // cached per-(Z1,Z2) table
+  double x_cum = 1.0;                   // cumulative number fraction (draw)
+  int z2 = 14;
+};
+
 // Precomputed ion-in-material stopping constants for one (dopant, target) pair.
 struct MatConstants {
-  double flight = 0, pmax = 0, inv_a = 0;
-  double eps_per_ev = 0, tmax_fac = 0, mass_ratio = 0, els_fac = 0;
+  double flight = 0, pmax = 0, els_fac = 0;  // material-level (total N)
   bool crystal_si = false;
   std::vector<CrystalAxis> chan_axes;  // populated only for crystal Si
+  std::vector<CompConstants> comps;    // size 1 => legacy fast path
 };
 
 MatConstants make_mat_constants(int z1, double m1, const TargetMaterial& t) {
   MatConstants c;
-  const int z2 = t.z;
-  const double m2 = t.m, N = t.n;
+  const double N = t.n;
   c.flight     = std::pow(N, -1.0/3.0);
   c.pmax       = c.flight / std::sqrt(M_PI);
-  c.inv_a      = 1.0 / mc::screening_length_cm(z1, z2);
-  c.eps_per_ev = mc::reduced_energy_per_ev(z1, m1, z2, m2);
-  c.tmax_fac   = 4.0*m1*m2/((m1+m2)*(m1+m2));
-  c.mass_ratio = m1/m2;
-  const double kls = 3.83e-15*std::pow(z1,7.0/6.0)*z2/
-      (std::pow(std::pow(z1,2.0/3.0)+std::pow(z2,2.0/3.0),1.5)*std::sqrt(m1));
-  c.els_fac    = N*c.flight*kls/std::sqrt(1000.0);
   c.crystal_si = t.crystal_si;
+
+  if (t.comp.empty()) {
+    // Single effective element: reproduce the legacy operation sequence
+    // exactly (bit-identical), rather than going through the weighted-sum
+    // loop with a single x_i=1.0 term.
+    const int z2 = t.z;
+    const double m2 = t.m;
+    CompConstants cc;
+    cc.z2         = z2;
+    cc.inv_a      = 1.0 / mc::screening_length_cm(z1, z2);
+    cc.eps_per_ev = mc::reduced_energy_per_ev(z1, m1, z2, m2);
+    cc.tmax_fac   = 4.0*m1*m2/((m1+m2)*(m1+m2));
+    cc.mass_ratio = m1/m2;
+    cc.x_cum      = 1.0;
+    const double kls = kls_coeff(z1, m1, z2);
+    c.els_fac = N*c.flight*kls/std::sqrt(1000.0);
+    c.comps.push_back(cc);
+    return c;
+  }
+
+  // Compound target: Bragg-rule weighted electronic stopping, per-component
+  // nuclear-scattering constants, cumulative number fractions for the
+  // collision-partner draw.
+  double kls_sum = 0.0, xcum = 0.0;
+  c.comps.reserve(t.comp.size());
+  for (const auto& comp : t.comp) {
+    const int z2 = comp.z;
+    const double m2 = comp.m;
+    CompConstants cc;
+    cc.z2         = z2;
+    cc.inv_a      = 1.0 / mc::screening_length_cm(z1, z2);
+    cc.eps_per_ev = mc::reduced_energy_per_ev(z1, m1, z2, m2);
+    cc.tmax_fac   = 4.0*m1*m2/((m1+m2)*(m1+m2));
+    cc.mass_ratio = m1/m2;
+    xcum += comp.x;
+    cc.x_cum = xcum;
+    c.comps.push_back(cc);
+    kls_sum += comp.x * kls_coeff(z1, m1, z2);
+  }
+  // Guard against rounding: force the last cumulative fraction to 1.0 so the
+  // partner draw always finds a match for u in [0,1).
+  c.comps.back().x_cum = 1.0;
+  c.els_fac = N*c.flight*kls_sum/std::sqrt(1000.0);
   return c;
 }
 
@@ -369,10 +452,21 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
     if (e <= kEstopEv) break;
 
     // Binary nuclear collision.
+    // Collision partner: proportional to number fraction x_i.
+    // CRITICAL (determinism): the partner draw consumes one rng.u() ONLY
+    // when comps.size() > 1. Single-element materials must take the
+    // comps.size()==1 branch with ZERO extra draws so the per-ion RNG
+    // stream is bit-identical to the legacy single-element implementation.
+    const CompConstants* cc = &mc_.comps[0];
+    if (mc_.comps.size() > 1) {
+      const double u = rng.u();               // partner draw
+      for (const auto& comp : mc_.comps)
+        if (u < comp.x_cum) { cc = &comp; break; }
+    }
     const double p_sq = b_min_sq + rng.u()*(mc_.pmax*mc_.pmax - b_min_sq);
     const double p    = std::sqrt(p_sq);
-    const double s2   = mc::sin2_half_theta(e * mc_.eps_per_ev, p * mc_.inv_a);
-    const double t_recoil = mc_.tmax_fac * e * s2;  // recoil energy [eV]
+    const double s2   = cc->table->sample(e * cc->eps_per_ev, p * cc->inv_a);
+    const double t_recoil = cc->tmax_fac * e * s2;  // recoil energy [eV]
     e -= t_recoil;
 
     // Kinchin-Pease damage: accumulate displaced atoms (crystal Si only).
@@ -388,7 +482,7 @@ Fate walk_ion(const WalkParams& w, Rng& rng, Vec3& rest) {
 
     const double cth = 1.0 - 2.0*s2;
     const double sth = 2.0*std::sqrt(std::max(0.0, s2*(1.0-s2)));
-    const double psi = std::atan2(sth, cth+mc_.mass_ratio);
+    const double psi = std::atan2(sth, cth+cc->mass_ratio);
     dir = deflect(dir, std::cos(psi), std::sin(psi), 2.0*M_PI*rng.u());
 
     if (e <= kEstopEv) break;
@@ -462,7 +556,11 @@ McImplantStats apply_mc_implant(const Mesh& mesh,
   // Multi-material transport needs the locator even without channeling.
   if (!w.single_material && !w.locator) w.locator = &locator;
 
-  scatter_table();  // ensure table is built before spawning workers
+  // Prebuild the (Z1,Z2) scatter-table cache in the main thread, before any
+  // worker touches it, so the parallel region only does read-only pointer
+  // dereferences (no locking needed).
+  for (auto& mc_ : w.mats)
+    for (auto& c : mc_.comps) c.table = &get_scatter_table(z1, c.z2);
 
   const long long nchunks = (p.ions + kChunk - 1) / kChunk;
 

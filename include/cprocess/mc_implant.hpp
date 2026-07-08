@@ -7,24 +7,46 @@
 
 namespace cp {
 
+// One constituent element of a compound target, e.g. Si or O within SiO2.
+// `x` is the number fraction (sum of x over all components of a material
+// must equal 1).
+struct TargetComponent {
+  int z = 14;         // atomic number
+  double m = 28.086;   // atomic mass [amu]
+  double x = 1.0;      // number fraction
+};
+
 // A stopping target for MC ion transport. Built-in helpers below provide
-// silicon (crystalline, channeling-capable), photoresist, and SiO2. Compounds
-// are modelled with Bragg-rule effective single-element constants (Z, M, N),
-// consistent with the binary-collision approximation used here.
+// silicon (crystalline, channeling-capable), photoresist, and SiO2.
+//
+// True compound BCA: `comp`, when non-empty, lists the target's constituent
+// elements {Z_i, M_i, x_i}. Each nuclear collision picks its partner element
+// with probability proportional to x_i (see walk_ion). Electronic stopping
+// still uses the Bragg rule (weighted sum over components) and the free
+// flight is drawn from the total atomic density `n`.
+//
+// `comp.empty()` is the single-element degenerate case, equivalent to
+// `comp = {{z, m, 1.0}}`, and is guaranteed bit-identical to the legacy
+// effective-single-element implementation (no extra RNG draws — see
+// walk_ion). `z`/`m` remain the Bragg-rule effective values for logging and
+// for materials that stay single-element (photoresist, vacuum).
 struct TargetMaterial {
   const char* name = "Si";
   int z = 14;            // effective atomic number
   double m = 28.086;     // effective atomic mass [amu]
-  double n = 4.99e22;    // atomic density [cm^-3]
+  double n = 4.99e22;    // TOTAL atomic density [cm^-3] (all components)
   bool crystal_si = false;  // enables crystal channeling in this material
+  std::vector<TargetComponent> comp;  // empty => single element {z, m, 1.0}
 };
 
 // Crystalline silicon substrate (channeling on when McImplantParams.channeling).
 TargetMaterial target_silicon();
 // Organic photoresist (DNQ-novolac), ~1.2 g/cm^3, carbon-dominated.
 TargetMaterial target_photoresist();
-// Thermal SiO2, ~2.2 g/cm^3.
+// Thermal SiO2, ~2.2 g/cm^3. True compound BCA: comp = {Si 1/3, O 2/3}.
 TargetMaterial target_oxide();
+// Si3N4, ~3.1 g/cm^3. True compound BCA: comp = {Si 3/7, N 4/7}.
+TargetMaterial target_nitride();
 // Near-vacuum / ambient: ~1000x less dense than a solid, so ions cross it
 // essentially undeflected. Use it to fill the developed (open) regions above a
 // patterned resist so ions reach the true silicon surface at the right depth.
