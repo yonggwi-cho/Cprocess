@@ -53,6 +53,10 @@ class ParamDB;
 
 constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
+// P3-e: stress-diffusion/oxidation coupling constants.
+constexpr double kBoltzmannErg = 1.380649e-16;  // erg/K
+constexpr double kOmegaSi = 2.0e-23;            // Si atomic volume [cm^3]
+
 // Fraction of Kinchin-Pease Frenkel pairs surviving in-cascade
 // recombination; the survivors seed the excess-interstitial field for TED
 // (cf. "+1" model: net excess ~ dose, i.e. ~1% of total displacements).
@@ -242,6 +246,12 @@ double oxide_diffusivity(const Dopant& d, double temp_k); // dox0*exp(-eox/kT); 
 // ── Si/silicide interface segregation accessors (P3-d) ──
 double segregation_m_silicide(const Dopant& d, double temp_k);  // seg_sil_m0*exp(-seg_sil_e/kT)
 double silicide_diffusivity(const Dopant& d, double temp_k);    // dsil0*exp(-esil/kT)
+
+// P3-e: per-species stress activation volume [cm^3] for the diffusion
+// pressure coupling D -> D*exp(-p*V_act/kT). ParamDB key "stress.vact.<Sym>"
+// overrides the built-in B/P/As defaults; any other species defaults to 0
+// (no correction, exp(0)=1).
+double stress_activation_volume(const Dopant& d);
 
 // ── Material-dependent diffusivity (P1-9) ──
 // D in material `mat` at temp_k, for n/ni = nni (only used for kMatSi).

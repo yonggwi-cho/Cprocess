@@ -49,9 +49,17 @@ OxidantResult solve_oxidant(const Mesh& m, const std::vector<char>& oxide_mask,
 // bird's-beak taper. `active_mask` marks every cell in the linear system's
 // non-trivial rows (oxide U nitride, typically); `d_cell` gives each such
 // cell's diffusivity (0 elsewhere is fine, ignored for inactive cells).
+// P3-e: optional per-face reaction-rate multiplier for the Robin (active/Si)
+// faces, indexed by face id (size m.faces.size()). nullptr (default) leaves
+// every Robin face's t_robin at its pre-P3-e value (ks unscaled) -- bit-
+// identical to the 5-argument call above. When non-null, `ks_face_scale[fi]`
+// multiplies `ks` for that face only (e.g. stress-slowed interface reaction,
+// scale in (0, 1]); faces never visited by the Robin branch ignore their
+// entry.
 OxidantResult solve_oxidant(const Mesh& m, const std::vector<double>& d_cell,
                             const std::vector<char>& active_mask,
                             const std::vector<char>& si_mask, double ks,
-                            double c_gas, std::ostream* log);
+                            double c_gas, std::ostream* log,
+                            const std::vector<double>* ks_face_scale = nullptr);
 
 }  // namespace cp

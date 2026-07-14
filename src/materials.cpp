@@ -343,6 +343,15 @@ double silicide_diffusivity(const Dopant& d, double temp_k) {
   return dsil0 * std::exp(-esil / (kBoltzmannEv * temp_k));
 }
 
+double stress_activation_volume(const Dopant& d) {
+  const auto& P = ParamDB::instance();
+  double def = 0.0;
+  if (d.symbol == "B") def = 3.4e-24;        // 0.17 * Omega_Si
+  else if (d.symbol == "P") def = 2.0e-24;   // 0.10 * Omega_Si
+  else if (d.symbol == "As") def = 6.0e-24;  // 0.30 * Omega_Si
+  return P.get("stress.vact." + d.symbol, def);
+}
+
 double material_diffusivity(const Dopant& d, MatId mat, double temp_k,
                             double nni) {
   const auto& P = ParamDB::instance();

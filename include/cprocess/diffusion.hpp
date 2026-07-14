@@ -70,6 +70,15 @@ struct DiffuseOpts {
   // why the JFNK (S-3) path is excluded. When effectively off, run()'s code
   // path is byte-identical to pre-PA-3 behavior.
   int species_parallel = 0;
+
+  // P3-e: per-cell hydrostatic pressure p = -tr(sigma)/3 [dyn/cm^2], size
+  // nc (mesh cell count). nullptr (default) = stress coupling off -> the
+  // dcell loops in step_once()/step_once_ted() take a no-op fast path,
+  // bit-identical to pre-P3-e behavior. Set by proc::diffuse/diffuse_ted
+  // from st.fields["sxx"/"syy"/"szz"] only when ParamDB "stress.couple" is
+  // non-zero and those fields exist at the current mesh size (see
+  // process.cpp); the solver itself never touches SimState.
+  const std::vector<double>* pressure = nullptr;
 };
 
 // T(t) [K]: linear interpolation of opts.temp_profile; opts.temp if empty.

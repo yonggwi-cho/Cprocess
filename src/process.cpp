@@ -1809,8 +1809,59 @@ double oxidize_2d(SimState& st, double time_s, double temp_k, bool wet,
       else if (is_silicon(mat)) { si_mask[i] = 1; }
     }
 
+    // P3-e: opt-in stress->oxidation coupling. Re-run mechanics on the
+    // *current* sub-step's mesh (geometry changes every sub-step, so a
+    // stale field would be wrong) and, from the resulting cell stresses,
+    // build a per-face k_s multiplier for the Robin (active/Si) faces:
+    // scale = exp(min(0,sigma_nn)*V_r/kT) <= 1 -- compressive normal stress
+    // (sigma_nn < 0 under this module's tension-positive convention) only
+    // slows the interface reaction (Kao-type self-limiting bird's-beak);
+    // tension never speeds it up. Off (default) or missing stress fields:
+    // ks_face_scale stays empty -> solve_oxidant() takes its pre-P3-e path.
+    std::vector<double> ks_face_scale;
+    if (ParamDB::instance().get("stress.couple", 0.0) != 0.0) {
+      mechanics(st, temp_k, dt_step, log);
+      const std::size_t nc_sz = st.mesh.cells.size();
+      const auto sxxIt = st.fields.find("sxx"), syyIt = st.fields.find("syy"),
+                 szzIt = st.fields.find("szz"), sxyIt = st.fields.find("sxy"),
+                 syzIt = st.fields.find("syz"), sxzIt = st.fields.find("sxz");
+      if (sxxIt != st.fields.end() && syyIt != st.fields.end() &&
+          szzIt != st.fields.end() && sxyIt != st.fields.end() &&
+          syzIt != st.fields.end() && sxzIt != st.fields.end() &&
+          sxxIt->second.size() == nc_sz && syyIt->second.size() == nc_sz &&
+          szzIt->second.size() == nc_sz && sxyIt->second.size() == nc_sz &&
+          syzIt->second.size() == nc_sz && sxzIt->second.size() == nc_sz) {
+        const double Vr = ParamDB::instance().get("stress.vr", 1.5e-23);
+        const double kT = kBoltzmannErg * temp_k;
+        const int nf = static_cast<int>(st.mesh.faces.size());
+        ks_face_scale.assign(nf, 1.0);
+        for (int fi = 0; fi < nf; ++fi) {
+          const Face& f = st.mesh.faces[fi];
+          const int fo = f.owner, fn = f.neigh;
+          int csi = -1;
+          if (fo >= 0 && si_mask[fo]) csi = fo;
+          else if (fn >= 0 && si_mask[fn]) csi = fn;
+          if (csi < 0) continue;
+          const double area = norm(f.S);
+          if (area <= 0) continue;
+          const double nx = f.S.x / area, ny = f.S.y / area, nz = f.S.z / area;
+          const double sxxv = sxxIt->second[csi], syyv = syyIt->second[csi],
+                       szzv = szzIt->second[csi], sxyv = sxyIt->second[csi],
+                       syzv = syzIt->second[csi], sxzv = sxzIt->second[csi];
+          const double snn = nx * nx * sxxv + ny * ny * syyv + nz * nz * szzv +
+                              2.0 * (nx * ny * sxyv + ny * nz * syzv + nx * nz * sxzv);
+          const double arg = std::min(0.0, snn) * Vr / kT;
+          ks_face_scale[fi] = std::exp(std::max(-30.0, arg));
+        }
+      } else if (log) {
+        *log << "[oxidize_2d] stress coupling: mechanics produced no usable "
+                "stress field this sub-step -- no-op\n";
+      }
+    }
+
     const OxidantResult ores =
-        solve_oxidant(st.mesh, d_cell, active_mask, si_mask, ks, c_gas, log);
+        solve_oxidant(st.mesh, d_cell, active_mask, si_mask, ks, c_gas, log,
+                      ks_face_scale.empty() ? nullptr : &ks_face_scale);
 
     // Per-column area-weighted average growth velocity (cm/s), from every
     // Robin face whose owning active cell lies in that column.
@@ -2135,8 +2186,39 @@ void diffuse(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
+  // P3-e: opt-in stress->diffusion coupling. pressure stays empty/unused
+  // (opts_local.pressure remains the nullptr default) unless ParamDB
+  // "stress.couple" is on AND a complete, current-size stress field trio
+  // exists in st.fields -- in every other case this is a strict no-op, and
+  // solver.run() below sees the exact same DiffuseOpts as before P3-e.
+  DiffuseOpts opts_local = opts;
+  std::vector<double> pressure;
+  {
+    const std::size_t nc = st.mesh.cells.size();
+    const auto sx = st.fields.find("sxx"), sy = st.fields.find("syy"),
+               sz = st.fields.find("szz");
+    if (ParamDB::instance().get("stress.couple", 0.0) != 0.0) {
+      if (sx != st.fields.end() && sy != st.fields.end() &&
+          sz != st.fields.end() && sx->second.size() == nc &&
+          sy->second.size() == nc && sz->second.size() == nc) {
+        pressure.resize(nc);
+        double pmin = 1e300, pmax = -1e300;
+        for (std::size_t i = 0; i < nc; ++i) {
+          const double p = -(sx->second[i] + sy->second[i] + sz->second[i]) / 3.0;
+          pressure[i] = p;
+          pmin = std::min(pmin, p); pmax = std::max(pmax, p);
+        }
+        opts_local.pressure = &pressure;
+        if (log) *log << "[diffuse] stress coupling ON (p in [" << fmt("%.4g", pmin)
+                      << ", " << fmt("%.4g", pmax) << "] dyn/cm^2)\n";
+      } else if (log) {
+        *log << "[diffuse] stress.couple set but no matching stress field "
+                "(mechanics not run, or mesh size mismatch) -- no-op\n";
+      }
+    }
+  }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
-  solver.run(fields, st.bcs, opts);
+  solver.run(fields, st.bcs, opts_local);
   st.last_temp = temp_at(opts, opts.time);
 }
 
@@ -2195,8 +2277,35 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts, std::ostream* log) {
     for (const auto& fl : fields) *log << " " << fl.dopant->symbol;
     *log << "\n";
   }
+  // P3-e: same opt-in stress coupling as diffuse() above.
+  DiffuseOpts opts_local = opts;
+  std::vector<double> pressure;
+  {
+    const std::size_t nc = st.mesh.cells.size();
+    const auto sx = st.fields.find("sxx"), sy = st.fields.find("syy"),
+               sz = st.fields.find("szz");
+    if (ParamDB::instance().get("stress.couple", 0.0) != 0.0) {
+      if (sx != st.fields.end() && sy != st.fields.end() &&
+          sz != st.fields.end() && sx->second.size() == nc &&
+          sy->second.size() == nc && sz->second.size() == nc) {
+        pressure.resize(nc);
+        double pmin = 1e300, pmax = -1e300;
+        for (std::size_t i = 0; i < nc; ++i) {
+          const double p = -(sx->second[i] + sy->second[i] + sz->second[i]) / 3.0;
+          pressure[i] = p;
+          pmin = std::min(pmin, p); pmax = std::max(pmax, p);
+        }
+        opts_local.pressure = &pressure;
+        if (log) *log << "[ted] stress coupling ON (p in [" << fmt("%.4g", pmin)
+                      << ", " << fmt("%.4g", pmax) << "] dyn/cm^2)\n";
+      } else if (log) {
+        *log << "[ted] stress.couple set but no matching stress field "
+                "(mechanics not run, or mesh size mismatch) -- no-op\n";
+      }
+    }
+  }
   DiffusionSolver solver(st.mesh, silicon_mask(st), log, material_ids(st));
-  solver.run_ted(fields, psi, v, c311, st.bcs, opts);
+  solver.run_ted(fields, psi, v, c311, st.bcs, opts_local);
   st.last_temp = temp_at(opts, opts.time);
 }
 

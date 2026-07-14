@@ -53,7 +53,8 @@ OxidantResult solve_oxidant(const Mesh& m, const std::vector<char>& oxide_mask,
 OxidantResult solve_oxidant(const Mesh& m, const std::vector<double>& d_cell,
                             const std::vector<char>& active_mask,
                             const std::vector<char>& si_mask, double ks,
-                            double c_gas, std::ostream* log) {
+                            double c_gas, std::ostream* log,
+                            const std::vector<double>* ks_face_scale) {
   const int nc = static_cast<int>(m.cells.size());
   const int nf = static_cast<int>(m.faces.size());
   OxidantResult res;
@@ -120,7 +121,8 @@ OxidantResult solve_oxidant(const Mesh& m, const std::vector<double>& d_cell,
       const double gb = dot(f.S, f.S) / sd;
       const double t_diff = d_cell[o] * gb;
       if (t_diff > 0) {
-        const double t_robin = 1.0 / (1.0 / t_diff + 1.0 / (ks * area));
+        const double ks_f = ks * (ks_face_scale ? (*ks_face_scale)[fi] : 1.0);
+        const double t_robin = 1.0 / (1.0 / t_diff + 1.0 / (ks_f * area));
         rfaces.push_back({ho, t_robin, area, fi});
       }
     } else if (an && n >= 0 && si_mask[o] && !ao) {
@@ -131,7 +133,8 @@ OxidantResult solve_oxidant(const Mesh& m, const std::vector<double>& d_cell,
       const double gb = dot(f.S, f.S) / sd;
       const double t_diff = d_cell[n] * gb;
       if (t_diff > 0) {
-        const double t_robin = 1.0 / (1.0 / t_diff + 1.0 / (ks * area));
+        const double ks_f = ks * (ks_face_scale ? (*ks_face_scale)[fi] : 1.0);
+        const double t_robin = 1.0 / (1.0 / t_diff + 1.0 / (ks_f * area));
         rfaces.push_back({hn, t_robin, area, fi});
       }
     }

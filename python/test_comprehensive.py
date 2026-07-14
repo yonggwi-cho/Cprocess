@@ -1411,6 +1411,31 @@ def test_silicide_python():
 
 
 # ---------------------------------------------------------------------------
+def test_stress_physics_python():
+    """P3-e: opt-in stress->diffusion coupling smoke test. No new proc::
+    functions/pybind surface -- just the "stress.couple" ParamDB key plus
+    the existing mechanics()/diffuse() methods."""
+    print("test_stress_physics_python")
+
+    def run(couple):
+        sim = cp.Simulation()
+        sim.mesh(0.2, 0.2, 0.5, 4, 4, 50)
+        sim.region("silicon")
+        sim.init("B", 1e18)
+        sim.set_param("stress.couple", 1.0 if couple else 0.0)
+        sim.mechanics(temp=1000, time=60)
+        sim.diffuse(time=120, temp=900)
+        b = sim.field("B")
+        sim.set_param("stress.couple", 0.0)
+        return b
+
+    b_off = run(False)
+    b_on = run(True)
+    check(np.all(np.isfinite(b_on)), "stress_physics: B field finite with coupling on")
+    check(not np.array_equal(b_off, b_on),
+          "stress_physics: coupling produces a different B result than off")
+
+
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -1457,4 +1482,5 @@ if __name__ == "__main__":
     test_fast_1d2d_python()
     test_epitaxy_python()
     test_silicide_python()
+    test_stress_physics_python()
     print("\nall comprehensive Simulation tests passed")

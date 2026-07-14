@@ -571,6 +571,14 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
     // outside Si, so pass 1.0).
     for (int s = 0; s < ns; ++s) {
       const Dopant& dp = *fields[s].dopant;
+      // P3-e: species' activation volume, hoisted once per species per
+      // Picard pass. vact==0 (no ParamDB entry / non-B/P/As species, or
+      // o.pressure == nullptr) skips the exp() branch entirely below, so
+      // this dcell loop is the single hook that reaches all three solve
+      // paths (classic Picard at line ~618, PA-3 species-parallel at
+      // ~750+, and S-3 Newton, which reuses this same frozen dcell) --
+      // they all branch *after* this loop, never before it.
+      const double vact_s = o.pressure ? stress_activation_volume(dp) : 0.0;
       for (int i = 0; i < nc; ++i) {
         if (!mask_[i]) { dcell[s][i] = 0; continue; }
         if (mat_[i] != kMatSi) {
@@ -588,6 +596,14 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
             const double cc = 0.5 * (nni[i] - 1.0 / nni[i]);  // = Nnet/(2 ni)
             dv *= 1.0 + std::fabs(cc) / std::sqrt(cc * cc + 1.0);
           }
+        }
+        if (o.pressure && vact_s != 0.0) {
+          // P3-e: D -> D*exp(-p*V_act/kT), p = -tr(sigma)/3 (compressive
+          // positive). Purely local/explicit: it only rescales this
+          // Picard pass's frozen dcell, so it converges naturally inside
+          // the existing outer Picard/nni loop with no Jacobian changes.
+          const double arg = -(*o.pressure)[i] * vact_s / (kBoltzmannErg * T);
+          dv *= std::exp(std::max(-30.0, std::min(30.0, arg)));
         }
         dcell[s][i] = dv;
       }
@@ -1211,6 +1227,8 @@ void DiffusionSolver::step_once_ted(
       }
       for (int s = 0; s < ns; ++s) {
         const Dopant& dp = *fields[s].dopant;
+        // P3-e: see step_once()'s matching comment; same hook, TED path.
+        const double vact_s = o.pressure ? stress_activation_volume(dp) : 0.0;
         for (int i = 0; i < nc; ++i) {
           if (!mask_[i]) { dcell[s][i] = 0; continue; }
           if (mat_[i] != kMatSi) {
@@ -1231,6 +1249,10 @@ void DiffusionSolver::step_once_ted(
                          (1.0 - fi_ov[s]) * (CV[i] / pdp.cv_star);
           scale = std::min(scale, 1e4);
           dv *= scale;
+          if (o.pressure && vact_s != 0.0) {  // P3-e, applied after CI/CV scale
+            const double arg = -(*o.pressure)[i] * vact_s / (kBoltzmannErg * T);
+            dv *= std::exp(std::max(-30.0, std::min(30.0, arg)));
+          }
           dcell[s][i] = dv;
         }
       }
