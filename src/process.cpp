@@ -2375,6 +2375,34 @@ void mechanics(SimState& st, double temp_k, double dt_s, std::ostream* log) {
     for (int k = 0; k < 3; ++k) eps0[c * 6 + k] = e_thermal + e_intrinsic;
   }
 
+  // P3-f: SiGe lattice-mismatch eigenstrain (Vegard's law), added in
+  // parallel with the thermal/intrinsic terms above. x_Ge = C_Ge/kNSi,
+  // eps0 += eps0_coef*x_Ge (isotropic hydrostatic form, same documented
+  // simplification as the intrinsic-film term above). Ge=0 (no field, or
+  // an all-zero field) leaves eps0 exactly unchanged (+= 0.0), which is
+  // what keeps this an exact identity with pre-P3-f results.
+  {
+    const auto ge = st.fields.find("Ge");
+    const double eps_coef = db.get("sige.eps0_coef", 0.042);
+    double max_xge = 0.0;
+    if (db.get("sige.couple", 1.0) != 0.0 && ge != st.fields.end() &&
+        ge->second.size() == static_cast<std::size_t>(nc)) {
+      for (int c = 0; c < nc; ++c) {
+        if (!is_silicon(mat_name[c]) && mat_name[c] != "poly" &&
+            mat_name[c] != "polysilicon")
+          continue;  // Ge composition only meaningful inside the Si lattice
+        const double xge = std::clamp(ge->second[c] / kNSi, 0.0, 1.0);
+        if (xge <= 0.0) continue;
+        const double e_misfit = eps_coef * xge;
+        for (int k = 0; k < 3; ++k) eps0[c * 6 + k] += e_misfit;
+        max_xge = std::max(max_xge, xge);
+      }
+      if (log && max_xge > 0.0)
+        *log << "mechanics: SiGe eigenstrain ON (max x_Ge=" << fmt("%.4g", max_xge)
+             << ")\n";
+    }
+  }
+
   FemProblem prob = fem_assemble(st.mesh, E_cell, nu_cell, eps0);
 
   // BC: roller at the three "min" faces (zmin/xmin/ymin), each pinning only

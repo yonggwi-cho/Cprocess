@@ -232,6 +232,13 @@ double silicide(SimState& st, const std::string& metal, double temp_k,
 // absent means purely elastic/no relaxation). Results are written to
 // st.fields["sxx"], "syy", "szz", "sxy", "syz", "sxz" (dyn/cm^2, the CGS
 // stress unit consistent with the rest of the C++ core).
+// P3-f: if st.fields["Ge"] is present, its composition (x_Ge = C_Ge/kNSi)
+// contributes an additional Vegard's-law eigenstrain (ParamDB
+// "sige.eps0_coef", default 0.042) added in parallel with the thermal/
+// intrinsic terms above; this is the strain *source* only. To have that
+// strain actually perturb diffusion, call set_param("stress.couple", 1)
+// before diffuse()/diffuse_ted() so P3-e's DiffuseOpts::pressure hydrostatic
+// coupling picks up the resulting stress field from this call.
 void mechanics(SimState& st, double temp_k, double dt_s,
               std::ostream* log = nullptr);
 

@@ -536,6 +536,19 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
     for (int i = 0; i < nc; ++i) cmax = std::max(cmax, (*fields[s].conc)[i]);
   const double cfloor = 1e-3 * std::max(cmax, 1.0);
 
+  // P3-f: SiGe bandgap narrowing -> per-cell ni_SiGe = ni*exp(dEg/2kT), with
+  // dEg = dEg_coef*x_Ge. Found once per step_once() call, not per Picard
+  // pass (Ge is a fixed marker field, never updated inside the loop). When
+  // no "Ge" species is present (s_ge < 0) or sige.couple == 0, sige_on is
+  // false and the nni loop below falls back to `ni_c = ni` exactly, which
+  // keeps this an exact identity with pre-P3-f behavior.
+  int s_ge = -1;
+  for (int s = 0; s < ns; ++s)
+    if (fields[s].dopant->symbol == "Ge") { s_ge = s; break; }
+  const double dEg_coef = ParamDB::instance().get("sige.dEg_coef", 0.4);
+  const bool sige_on =
+      s_ge >= 0 && ParamDB::instance().get("sige.couple", 1.0) != 0.0;
+
   int picard = 0, lin_iters = 0;
   int newton_iters_step = 0;  // S-3: total per-species Newton iters this step
   // S-3: per-species reference ||F0|| for the Newton stopping test, fixed
@@ -563,7 +576,13 @@ void DiffusionSolver::step_once(std::vector<SpeciesField>& fields,
         if (o.activation) c = active_concentration(*fields[s].dopant, c, T);
         nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
       }
-      const double cc = nnet / (2.0 * ni);
+      double ni_c = ni;
+      if (sige_on) {
+        const double xge = std::min((*fields[s_ge].conc)[i] / kNSi, 1.0);
+        if (xge > 0.0)
+          ni_c *= std::exp(dEg_coef * xge / (2.0 * kBoltzmannEv * T));
+      }
+      const double cc = nnet / (2.0 * ni_c);
       nni[i] = cc + std::sqrt(cc * cc + 1.0);
     }
     // Per-cell diffusivity: full Fair model (+ optional field enhancement)
@@ -1212,6 +1231,13 @@ void DiffusionSolver::step_once_ted(
       for (int i = 0; i < nc; ++i) cmax = std::max(cmax, (*fields[s].conc)[i]);
     const double cfloor = 1e-3 * std::max(cmax, 1.0);
 
+    // P3-f: see step_once()'s matching comment; same ni_SiGe hook, TED path.
+    int s_ge = -1;
+    for (int s = 0; s < ns; ++s)
+      if (fields[s].dopant->symbol == "Ge") { s_ge = s; break; }
+    const double dEg_coef = db.get("sige.dEg_coef", 0.4);
+    const bool sige_on = s_ge >= 0 && db.get("sige.couple", 1.0) != 0.0;
+
     for (int picard = 1; picard <= o.max_picard; ++picard) {
       for (int i = 0; i < nc; ++i) {
         if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
@@ -1222,7 +1248,13 @@ void DiffusionSolver::step_once_ted(
           if (o.activation) c = active_concentration(*fields[s].dopant, c, T);
           nnet += (fields[s].dopant->type == DopType::donor) ? c : -c;
         }
-        const double cc = nnet / (2.0 * ni);
+        double ni_c = ni;
+        if (sige_on) {
+          const double xge = std::min((*fields[s_ge].conc)[i] / kNSi, 1.0);
+          if (xge > 0.0)
+            ni_c *= std::exp(dEg_coef * xge / (2.0 * kBoltzmannEv * T));
+        }
+        const double cc = nnet / (2.0 * ni_c);
         nni[i] = cc + std::sqrt(cc * cc + 1.0);
       }
       for (int s = 0; s < ns; ++s) {
