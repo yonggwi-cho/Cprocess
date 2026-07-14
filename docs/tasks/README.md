@@ -94,24 +94,27 @@
 | PA-4 | `PA4_gpu.md` | **実装済** | なし (CPROCESS_GPU=OFF 既定; ON はオフロード実機で未検証) |
 | PA-5 | `PA5_mpi.md` | **実装済** | なし (CPROCESS_MPI=OFF 既定; 4 ランク実行は MPI 環境で未検証) |
 
-### 長期 (P3)
+### 長期 (P3) (実装済み)
 
-縮約仕様は `P3_overview.md` (設計方針の確定文書として維持)。以下の個別仕様書へ展開済み。
+縮約仕様は `P3_overview.md` (設計方針の確定文書として維持)。以下の個別仕様書へ展開・実装済み。
 
 | ID | ファイル | 状態 | 依存 |
 |----|---------|------|------|
-| P3-a | `P3a_compound_bca.md` | 仕様確定 | なし (mc_implant.cpp のみ) |
-| P3-b | `P3b_epitaxy.md` | 仕様確定 | P1-7, M-2 |
-| P3-c | `P3c_sper.md` | 仕様確定 | P1-2, P2-1 |
-| P3-d | `P3d_silicide.md` | 仕様確定 | P1-6, P1-7 (SegTable 拡張が P1-4 に波及) |
-| P3-e | `P3e_stress_physics.md` | 仕様確定 | P2-6, P2-4 |
-| P3-f | `P3f_sige_strain.md` | 仕様確定 | P2-6, P2-8, **P3-e (先行実装必須)** |
-| P3-g | `P3g_fast_1d2d.md` | 仕様確定 | なし (独立) |
-| P3-h | `P3h_device_export.md` | 仕様確定 | P1-11 |
+| P3-a | `P3a_compound_bca.md` | **実装済** | なし (mc_implant.cpp のみ) |
+| P3-b | `P3b_epitaxy.md` | **実装済** | P1-7, M-2 |
+| P3-c | `P3c_sper.md` | **実装済** | P1-2, P2-1 |
+| P3-d | `P3d_silicide.md` | **実装済** | P1-6, P1-7 (SegTable 拡張が P1-4 に波及) |
+| P3-e | `P3e_stress_physics.md` | **実装済** | P2-6, P2-4 |
+| P3-f | `P3f_sige_strain.md` | **実装済** | P2-6, P2-8, P3-e |
+| P3-g | `P3g_fast_1d2d.md` | **実装済** | なし (独立) |
+| P3-h | `P3h_device_export.md` | **実装済** | P1-11 |
 
-推奨実装順: 独立な P3-a / P3-g / P3-h は並列可。P3-b と P3-d は
-process.cpp/materials.cpp を共有するため直列推奨。P3-e → P3-f は依存関係
-そのものが直列。P3-c は diffusion.cpp/process.cpp を触るため P3-e 系と
-並走させない。
+実装順: P3-a → P3-h → P3-g → P3-b → P3-d → P3-e → P3-f → P3-c
+(P3-b/d は process.cpp/materials.cpp 共有のため直列、P3-e→P3-f は依存関係
+そのものが直列、P3-c は diffusion.cpp/process.cpp 変更のため P3-e/f 系と
+分離)。
+
+これで Sprint 0〜3、P1、P2、S/M/PA、P3 の全タスクが実装済みとなった。
+
 
 計画全体は `docs/IMPLEMENTATION_PLAN.md` を参照。
