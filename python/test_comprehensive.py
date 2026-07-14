@@ -1436,6 +1436,40 @@ def test_stress_physics_python():
           "stress_physics: coupling produces a different B result than off")
 
 
+# ---------------------------------------------------------------------------
+def test_sper_python():
+    """P3-c: solid-phase epitaxial regrowth -- Simulation.sper()."""
+    print("test_sper_python")
+
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=0.5, nx=4, ny=4, nz=50)
+    sim.region("silicon")
+    sim.init("B", 1e15)
+    sim.implant("As", dose=1e15, energy=30, mc=True, ions=20000,
+               channeling=True, damage=True, threads=1, seed=1)
+    check("damage" in sim.field_names(), "sper: 'damage' field persisted after MC implant")
+
+    damage_before = sim.field("damage").copy()
+    dmax_before = float(damage_before.max())
+    print(f"  max damage before sper = {dmax_before:.4g}")
+
+    ret = sim.sper(600, 500)
+    check(ret is sim, "sper: chaining returns self")
+    check("[sper]" in sim.log, "sper: log contains [sper]")
+
+    dmax_after = float(sim.field("damage").max())
+    print(f"  max damage after sper = {dmax_after:.4g}")
+    check(dmax_after <= dmax_before, "sper: max damage decreased or unchanged")
+
+    if dmax_before >= 6.25e21:
+        sim.set_param("sper.act_factor", 1.0)
+        act_max = float(sim.active("As", 600).max())
+        print(f"  As active max (act_factor=1) = {act_max:.4g}")
+        check(act_max <= 2.1e19, "sper: act_factor=1 clamps regrown cells to C_ss")
+    else:
+        print("  (max damage below amorphization threshold; skipping act_factor check)")
+
+
 if __name__ == "__main__":
     test_bc_diffuse()
     test_dose()
@@ -1483,4 +1517,5 @@ if __name__ == "__main__":
     test_epitaxy_python()
     test_silicide_python()
     test_stress_physics_python()
+    test_sper_python()
     print("\nall comprehensive Simulation tests passed")

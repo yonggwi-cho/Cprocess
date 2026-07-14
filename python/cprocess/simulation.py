@@ -347,6 +347,15 @@ class Simulation:
                                       _celsius_to_k(temp), bool(wet)))
         return self
 
+    def sper(self, temp: float, time: float) -> "Simulation":
+        """Solid-phase epitaxial regrowth (P3-c). temp in Celsius, time in
+        minutes. Regrows the MC-amorphized layer (fields 'damage' >=
+        sper.amorph_density) column by column at v = v0*exp(-Ea/kT); regrown
+        cells get damage/I zeroed and metastable activation (sper.act_factor x
+        C_ss). Run before diffuse(ted=True)."""
+        self._emit(_c.proc_sper(self._st, _celsius_to_k(temp), time * MIN))
+        return self
+
     def silicide(self, metal: str, time: float, temp: float) -> "Simulation":
         """Silicidation of a deposited blanket metal film (P3-d).
 

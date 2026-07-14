@@ -259,6 +259,17 @@ void refine(SimState& st, const std::string& species, double rel_grad_thresh,
            int max_passes, const std::string& axis = "",
            std::ostream* log = nullptr);
 
+// P3-c: solid-phase epitaxial regrowth. Isothermal anneal at temp_k for
+// time_s. Reads st.fields["damage"] (raw MC displaced-atom density,
+// persisted by implant_mc); columns whose surface-connected damage exceeds
+// sper.amorph_density regrow bottom-up at v = sper.v0*exp(-sper.ea/kT).
+// Regrown cells: damage = 0, I = 0, fields["regrown"] = 1 (metastable
+// activation marker consumed by active_field()/save()). Intended to run
+// BEFORE diffuse_ted. No-op (with log) if no damage field / no amorphous
+// cells. Throws if a photoresist stack is present.
+void sper(SimState& st, double temp_k, double time_s,
+         std::ostream* log = nullptr);
+
 void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
 
 // Binary CPRC1 state save/load (P1-11). save_state throws if a photoresist

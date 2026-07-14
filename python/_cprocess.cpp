@@ -577,6 +577,17 @@ PYBIND11_MODULE(_cprocess, m) {
       "Blanket silicidation of a deposited metal film. K/s core units.\n"
       "Returns a log string.");
 
+  m.def("proc_sper",
+      [](SimState& st, double temp_k, double time_s) {
+        std::ostringstream log;
+        proc::sper(st, temp_k, time_s, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("temp_k"), py::arg("time_s"),
+      "Solid-phase epitaxial regrowth (P3-c). Isothermal anneal at temp_k\n"
+      "(K) for time_s (s); regrows MC-amorphized columns (fields['damage']\n"
+      "above sper.amorph_density) bottom-up. Returns a log string.");
+
   m.def("proc_oxidize_2d",
       [](SimState& st, double time_s, double temp_k, bool wet) {
         std::ostringstream log;

@@ -145,6 +145,14 @@ void seed_interstitials_from_damage(SimState& st,
   }
 }
 
+// Persist the raw MC displaced-atom density [cm^-3] (uncapped, no
+// kFrenkelSurvival factor) so SPER (P3-c) can find the amorphous depth.
+void accumulate_damage(SimState& st, const std::vector<double>& dmg) {
+  auto& D = st.fields["damage"];
+  D.resize(st.mesh.cells.size(), 0.0);
+  for (std::size_t i = 0; i < dmg.size() && i < D.size(); ++i) D[i] += dmg[i];
+}
+
 }  // namespace
 
 std::vector<char> silicon_mask(const SimState& st) {
@@ -353,6 +361,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
       const std::vector<double> dmg_transferred =
           transfer_field_nearest(st.stack, stack_dmg, st.mesh);
       seed_interstitials_from_damage(st, dmg_transferred);
+      accumulate_damage(st, dmg_transferred);
     } else if (seed_damage) {
       seed_interstitials(st, before, f);
     }
@@ -383,6 +392,7 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
                                             use_damage ? &dmg : nullptr);
   if (use_damage) {
     seed_interstitials_from_damage(st, dmg);
+    accumulate_damage(st, dmg);
   } else if (seed_damage) {
     seed_interstitials(st, before, f);
   }
@@ -2530,6 +2540,118 @@ void refine(SimState& st, const std::string& species, double rel_grad_thresh,
          << rr.n_cells_after << "\n";
 }
 
+// P3-c: solid-phase epitaxial regrowth (see process.hpp for the full
+// contract). Column decomposition mirrors profile1d()'s xy-bbox test,
+// gridded via infer_box_dims (box meshes only).
+void sper(SimState& st, double temp_k, double time_s, std::ostream* log) {
+  need_mesh(st);
+  if (st.has_stack) throw std::runtime_error("sper: strip before sper");
+  if (time_s < 0) throw std::runtime_error("sper: time_s must be >= 0");
+  if (!(temp_k > 0)) throw std::runtime_error("sper: temp_k must be > 0");
+
+  ParamDB& P = ParamDB::instance();
+  const double c_am = P.get("sper.amorph_density", kAmorphizationDensity);
+
+  auto dit = st.fields.find("damage");
+  double dmax = 0.0;
+  if (dit != st.fields.end())
+    for (double v : dit->second) dmax = std::max(dmax, v);
+  if (dit == st.fields.end() || dmax < c_am) {
+    if (log) *log << "[sper] no amorphous region (nothing to do)\n";
+    return;
+  }
+  std::vector<double>& damage = dit->second;
+
+  const double v0 = P.get("sper.v0", 3.1e8);
+  const double ea = P.get("sper.ea", 3.1);
+  const double v = v0 * std::exp(-ea / (kBoltzmannEv * temp_k));
+
+  const auto [nx, ny, nz] = infer_box_dims(st.mesh);
+  (void)nz;
+  const BBox bb = st.mesh.bbox();
+  const double hx = (bb.hi.x - bb.lo.x) / nx;
+  const double hy = (bb.hi.y - bb.lo.y) / ny;
+
+  const std::vector<char> mask = silicon_mask(st);
+  const std::size_t nc = st.mesh.cells.size();
+
+  // Group Si cells into (ix, iy) columns using each cell's xy-bbox minimum
+  // (same style as profile1d()'s point test, gridded).
+  std::map<long long, std::vector<std::size_t>> columns;
+  for (std::size_t ci = 0; ci < nc; ++ci) {
+    if (!mask[ci]) continue;
+    double xmin = 1e300, ymin = 1e300;
+    for (int nid : st.mesh.cells[ci]) {
+      const Vec3& p = st.mesh.nodes[nid];
+      xmin = std::min(xmin, p.x);
+      ymin = std::min(ymin, p.y);
+    }
+    const long long ix = std::llround((xmin - bb.lo.x) / hx);
+    const long long iy = std::llround((ymin - bb.lo.y) / hy);
+    columns[iy * static_cast<long long>(nx) + ix].push_back(ci);
+  }
+
+  auto* I = st.fields.count("I") ? &st.fields["I"] : nullptr;
+  auto& regrown = st.fields["regrown"];
+  regrown.resize(nc, 0.0);
+
+  int n_columns_processed = 0, n_skipped = 0, n_regrown = 0;
+  double d_a0_max = 0.0, d_a_max = 0.0;
+
+  for (auto& [key, cells] : columns) {
+    (void)key;
+    // Sort by centroid z descending (surface -> depth).
+    std::sort(cells.begin(), cells.end(), [&](std::size_t a, std::size_t b) {
+      return st.mesh.cell_cent[a].z > st.mesh.cell_cent[b].z;
+    });
+    double z_top = -1e300;
+    for (std::size_t ci : cells)
+      for (int nid : st.mesh.cells[ci])
+        z_top = std::max(z_top, st.mesh.nodes[nid].z);
+
+    // Surface-connected amorphous run.
+    if (cells.empty() || damage[cells[0]] < c_am) { ++n_skipped; continue; }
+    std::size_t run_end = 0;  // exclusive
+    while (run_end < cells.size() && damage[cells[run_end]] >= c_am) ++run_end;
+    if (run_end == 0) { ++n_skipped; continue; }
+
+    const std::size_t last = cells[run_end - 1];
+    double z_bot0 = 1e300;
+    for (int nid : st.mesh.cells[last])
+      z_bot0 = std::min(z_bot0, st.mesh.nodes[nid].z);
+
+    const double d_a0 = z_top - z_bot0;
+    if (!(d_a0 > 0)) { ++n_skipped; continue; }
+    const double dz = std::min(v * time_s, d_a0);
+    const double d_a = d_a0 - dz;
+
+    d_a0_max = std::max(d_a0_max, d_a0);
+    d_a_max = std::max(d_a_max, d_a);
+    ++n_columns_processed;
+
+    const double z_front = z_top - d_a;  // cells above this have regrown
+    for (std::size_t idx = 0; idx < run_end; ++idx) {
+      const std::size_t ci = cells[idx];
+      if (st.mesh.cell_cent[ci].z < z_front) {
+        damage[ci] = 0.0;
+        if (I) (*I)[ci] = 0.0;
+        regrown[ci] = 1.0;
+        ++n_regrown;
+      }
+    }
+  }
+
+  if (log) {
+    *log << "[sper] T=" << fmt("%.6g", temp_k) << " K, t=" << fmt("%.6g", time_s)
+         << " s, v=" << fmt("%.6g", v) << " cm/s (Ea=" << fmt("%.3g", ea)
+         << " eV)\n";
+    *log << "[sper] columns=" << n_columns_processed << " (skipped=" << n_skipped
+         << "), z_a max " << fmt("%.4g", d_a0_max * 1e4) << " -> "
+         << fmt("%.4g", d_a_max * 1e4) << " um, regrown cells=" << n_regrown
+         << "\n";
+  }
+}
+
 void save(SimState& st, const std::string& path, std::ostream* log) {
   need_mesh(st);
   const std::size_t nc = st.mesh.cells.size();
@@ -2539,13 +2661,25 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
 
   std::vector<double> net(nc, 0.0);
   extra.reserve(st.fields.size());
+  // P3-c: "regrown" cells (SPER metastable activation) get a raised
+  // solubility cap of sper.act_factor * C_ss(T) instead of the plain C_ss(T)
+  // clamp active_concentration() would otherwise apply.
+  const double f_sper_save = ParamDB::instance().get("sper.act_factor", 10.0);
+  auto rg_it_save = st.fields.find("regrown");
+  const std::vector<double>* rg_save =
+      (rg_it_save != st.fields.end()) ? &rg_it_save->second : nullptr;
   for (const auto& [sym, conc] : st.fields) {
     const Dopant* d = find_dopant(sym);
     if (!d) continue;
     extra.emplace_back(nc, 0.0);
     auto& act = extra.back();
+    const double css = solid_solubility(*d, st.last_temp);
     for (std::size_t i = 0; i < nc; ++i) {
-      act[i] = active_concentration(*d, conc[i], st.last_temp);
+      const double cap = (css > 0 && rg_save && i < rg_save->size() &&
+                          (*rg_save)[i] > 0.5)
+                             ? css * f_sper_save
+                             : css;
+      act[i] = (cap > 0) ? std::min(conc[i], cap) : conc[i];
       if (d->type == DopType::neutral) continue;  // P2-8: no net charge
       net[i] += (d->type == DopType::donor) ? act[i] : -act[i];
     }
@@ -2574,8 +2708,17 @@ std::vector<double> active_field(const SimState& st, const std::string& species,
   const double t_k = (temp_k > 0) ? temp_k : st.last_temp;
   const auto& conc = it->second;
   std::vector<double> act(conc.size());
-  for (std::size_t i = 0; i < conc.size(); ++i)
-    act[i] = active_concentration(*d, conc[i], t_k);
+  // P3-c: raise the cap to sper.act_factor * C_ss(T) for "regrown" cells
+  // (SPER metastable activation).
+  const double css = solid_solubility(*d, t_k);
+  const double f_sper = ParamDB::instance().get("sper.act_factor", 10.0);
+  auto rg_it = st.fields.find("regrown");
+  const std::vector<double>* rg = (rg_it != st.fields.end()) ? &rg_it->second : nullptr;
+  for (std::size_t i = 0; i < conc.size(); ++i) {
+    const double cap =
+        (css > 0 && rg && i < rg->size() && (*rg)[i] > 0.5) ? css * f_sper : css;
+    act[i] = (cap > 0) ? std::min(conc[i], cap) : conc[i];
+  }
   if (log)
     *log << "[active] " << d->symbol << ": C_ss(T)=" << solid_solubility(*d, t_k)
          << " cm^-3\n";

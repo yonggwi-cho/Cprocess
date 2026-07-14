@@ -50,6 +50,16 @@ class ParamDB;
 //                                   the measured calibration against the
 //                                   P2-8 TED-suppression acceptance test;
 //                                   deviates from the task spec's 2e-21).
+//   sper.v0                     -- P3-c SPER a/c front velocity prefactor
+//                                   [cm/s] (<100>), default 3.1e8
+//   sper.ea                     -- P3-c SPER front activation energy [eV],
+//                                   default 3.1
+//   sper.amorph_density         -- P3-c amorphization threshold [cm^-3]
+//                                   (raw damage field), default
+//                                   kAmorphizationDensity (6.25e21)
+//   sper.act_factor             -- P3-c metastable activation cap multiplier
+//                                   on C_ss(T) for "regrown" cells, default
+//                                   10.0
 
 constexpr double kBoltzmannEv = 8.617333262e-5;  // eV/K
 
