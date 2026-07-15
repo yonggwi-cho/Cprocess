@@ -116,5 +116,12 @@
 
 これで Sprint 0〜3、P1、P2、S/M/PA、P3 の全タスクが実装済みとなった。
 
+### 次期ロードマップ (v2)
 
-計画全体は `docs/IMPLEMENTATION_PLAN.md` を参照。
+Sentaurus Process との残存ギャップ解消計画は `docs/IMPLEMENTATION_PLAN_v2.md` を参照
+(根拠: `docs/sentaurus_gap_analysis_v2.md`)。タスク体系は W(配線・更新)/
+C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本ディレクトリへ
+個別仕様書を展開する運用は初代と同一。
+
+計画全体は `docs/IMPLEMENTATION_PLAN.md`(初代・完了)および
+`docs/IMPLEMENTATION_PLAN_v2.md`(次期)を参照。
