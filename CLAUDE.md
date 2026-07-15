@@ -8,6 +8,19 @@ Three-layer design. Never bypass a layer:
 2. **`proc::` namespace** (`include/cprocess/process.hpp`, `src/process.cpp`) — typed API that wraps the core. This is the single implementation shared by the text deck and Python. Every process step lives here.
 3. **Python front-end** (`python/cprocess/`) — `Simulation` class with µm/keV/min/°C engineering units. Users call this layer only; they never call the text deck.
 
+## Structure-model invariant
+
+Every process step reads and writes the **single shared structure representation**
+in `SimState` (mesh + region materials). Do NOT introduce a new operation-private
+structure representation (a side mesh, a transient level-set, a column-height
+array that other steps cannot see). If one is genuinely unavoidable, record an
+ADR in `docs/` stating why and the plan to fold it back into the shared
+representation. Rationale and the incident that motivated this rule:
+`docs/structure_model_root_cause.md`.
+
+Every new process-step spec must include a section answering: *how does an
+engineer inspect the result of this step?* (visualization, extraction, log).
+
 ## Mandatory: Python wrapper for every C++ function
 
 Whenever a new `proc::` function is added to `process.hpp`/`process.cpp`, you **must** also:

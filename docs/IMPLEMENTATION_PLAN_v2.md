@@ -68,6 +68,46 @@ oxidize_2d/silicide/…)を変換器・デッキ・主経路が使えていな�
   examples/ にデッキ版フルフローを 1 本追加し test_flow 相当で検証。
 - 依存: なし。規模: 中。
 
+### W-7: 途中構造の検査機能【外部テスト指摘による追加】
+- **現状**: レジストは本体メッシュと別の隠しスタック(`SimState::stack`)にあり、
+  `save()` は本体メッシュのみ出力、`save_state()`/`export_device()` はレジストが
+  あると throw。**photo/mask_polygon の結果形状を確認する手段が皆無**
+  (根本分析: `docs/structure_model_root_cause.md`)。
+- **やること**: (1) `proc::save_stack(st, path)` — stack メッシュを材料インデックス
+  (Si/resist/open)付き VTU 出力(既存 write_vtu 流用)。(2) `save()` に
+  `include_stack` オプション(レジスト存在時 `<name>_stack.vtu` を併記)。
+  (3) Python `Simulation.resist_mask()`(セル中心 + 材料の numpy 配列)。
+  (4) save_state/export_device の throw を「警告してレジスト抜きで続行」の
+  選択動作に緩和(既定は現行どおり throw、`force=` で緩和)。
+- **DoD**: 複雑ポリゴンマスク(GDS 読込含む)を photo→mask_polygon→save_stack で
+  ParaView 確認できる。pybind + Simulation + Python テスト三点セット。
+- 依存: なし。規模: 小。
+
+### W-8: メッシュ材料を考慮した注入輸送【外部テスト指摘による追加】
+- **現状**: MC 輸送エンジンは多材料対応済み(P3-a、oxide/nitride 化合物 BCA まで)
+  だが、一般経路は材料テーブルを渡さず**メッシュ全体を結晶 Si として輸送**。
+  STI/スクリーン酸化膜/窒化膜マスク越しの注入が物理的に誤る。解析注入も
+  上層材料の深さオフセットなし。多材料テーブルはレジストスタック経路のみ
+  ({Si, resist, 真空} の 3 種限定)。
+- **やること**: (1) `material_ids(st)`(既存)→ TargetMaterial テーブル
+  ({Si, SiO2, Si3N4, poly≈Si, gas=真空})写像を構築し、一般 MC 経路で常時
+  `cell_material` を渡す。(2) レジストスタック経路のテーブルにも oxide/nitride を
+  追加(スタック下の実材料を反映)。(3) 解析注入にカラム毎スクリーニング補正
+  (上層材料厚の実効 Si 換算)。(4) 全域 Si メッシュでは従来とビット一致を保証
+  (single_material 高速パスの維持)。
+- **DoD**: スクリーン酸化膜 20 nm 越し B 30 keV の Rp シフトが MC/解析で整合。
+  STI 構造(酸化膜埋込トレンチ)への well 注入で酸化膜下の分布が bare Si と
+  有意に異なることを検証。golden flow テスト(下記 GF)①③が PASS。
+- 依存: なし(W-7 と並列可)。規模: 中。
+
+### GF: golden flow シナリオテスト新設【再発防止・W-8 と同時】
+- 実プロセスフロー横断の統合テスト 3 本を tests/test_golden_flows.cpp として新設:
+  ① STI(トレンチエッチ+酸化膜埋込)→ well 注入 → RTA、
+  ② LOCOS + poly ゲート + レジスト 2 回(S/D 注入)、
+  ③ スクリーン酸化膜越し注入 + スパイク RTA + Rs 相当量の検証。
+  以後の**全タスクの DoD に golden flow PASS を含める**(共通規約 7 として追記)。
+- 依存: W-8(①③が W-8 の挙動を前提)。規模: 中。
+
 ### W-4: 既定スレッド数抑制の解除
 - **現状**: `ensure_sane_thread_count()`(sparse.cpp)が OMP_NUM_THREADS 未設定時に
   既定 1 スレッドへ抑制、`run_ted` は `OmpThreadGuard(1)` で全体シングルスレッド化。
@@ -201,6 +241,19 @@ oxidize_2d/silicide/…)を変換器・デッキ・主経路が使えていな�
 - 同時に検討: 注入間累積非晶質化の BCA 反映(damage 場→次回 MC の初期結晶状態)、
   分子注入 BF2(質量分配 + 実効エネルギー)— いずれも独立の中規模タスクとして分離可。
 
+### A-7: 構造モデル統一(structure-first 化)(Sprint 4 冒頭、A-3/A-4 より先)
+- **内容**: 構造表現の分裂(本体メッシュ/レジスト隠しスタック/layer_stack/
+  レベルセット一時場/カラム高さ — `docs/structure_model_root_cause.md` §1)を解消する。
+  第 1 段: レジストを本体メッシュの材料(MatId に resist 追加)として統合し、
+  photo/mask を deposit/etch の特殊形へ再定義(既存 API は互換ラッパ維持、
+  MC は W-8 の多材料輸送でそのまま動く)。表現 2(隠しスタック)を廃止。
+  第 2 段: レベルセット φ とカラム高さを「mesh+材料から導出されるキャッシュ」に
+  格下げし、正本を常に単一化。
+- **理由**: SProcess の中核アーキテクチャ不変量(全工程が単一構造を共有)への
+  収斂。A-3(粘性流動酸化)・A-4(界面適合)を分裂した表現の上に建てると
+  表現がさらに増殖するため、**A-3/A-4 より先に第 1 段を完了させる**。
+- 依存: W-7, W-8(是正の前提)。規模: 大。2 コミット分割(第 1 段/第 2 段)。
+
 ### A-6: デバイス連携の実用化(Sprint 6、独立)
 - **内容**: (1) `contact` コマンド(名前 + 面パッチ/領域指定)を SimState に追加し
   export_device の meta.json に出力。(2) TDR は非公開フォーマットのため直接対応は
@@ -214,12 +267,13 @@ oxidize_2d/silicide/…)を変換器・デッキ・主経路が使えていな�
 ## 実行順序まとめ(依存グラフ)
 
 ```
-Sprint 1:  W-1 ∥ W-2 ∥ W-3 ∥ W-4          (全並列可; W-2 の対訳表のみ W-1 後)
+Sprint 1:  W-7 ∥ W-8 ∥ W-1 ∥ W-2 ∥ W-3 ∥ W-4   (W-7/W-8 最優先; W-2 の対訳表のみ W-1 後)
+Sprint 1':  GF(golden flow テスト; W-8 後すぐ)
 Sprint 2:  W-5 → W-6                        (直列: diffusion.cpp 共有)
 Sprint 3:  C-1 ∥ C-2 ∥ C-3                 (並列可; W-3 と引数規約を整合)
-Sprint 4:  A-1 → A-2(開始) ∥ A-6
-Sprint 5:  A-2(完了) → A-3 ∥ A-4(W-6 後)
-Sprint 6:  A-5(A-2 後) ∥ A-4 継続・A-4b 判断
+Sprint 4:  A-7 第1段(レジスト統合) → A-1 → A-2(開始) ∥ A-6
+Sprint 5:  A-2(完了) → A-3 ∥ A-4(W-6, A-7 後)
+Sprint 6:  A-5(A-2 後) ∥ A-4 継続・A-4b 判断 ∥ A-7 第2段
 ```
 
 ## 共通規約(初代から継承 + 追加)
@@ -235,6 +289,18 @@ Sprint 6:  A-5(A-2 後) ∥ A-4 継続・A-4b 判断
 5. 校正系(C 群)は係数の出典(文献/SRIM 条件)をコードコメントに必須記載。
 6. フルテストスイート(現 49 本 + Python 51)は今後も増加するため、
    長時間テスト(ted/oed/ox2d/newton)の分離実行ラベル化を W-2 で合わせて導入検討。
+7. **golden flow ゲート**(GF 完了後): 全タスクの DoD に golden flow 3 本の PASS を
+   含める。工程横断の構造不整合をタスク単位検証の外に漏らさない
+   (`docs/structure_model_root_cause.md` §3 Why-3 への恒久対策)。
+8. **アーキテクチャ不変量**: 全工程は SimState の単一構造表現を読み書きする。
+   工程私有の構造表現を新設する場合は ADR で例外理由と統合計画を必須記載
+   (同レポート §4.2-1; CLAUDE.md にも追記済み)。
+9. **配線負債レジスタ**: 「実装済みだが主経路未統合」のコンポーネントを
+   docs/tasks/README.md の常設表で管理し、タスク完了時に新規負債を登録
+   (現在の負債: AMG, BCSR, coarsen, GPU CG → W-5/W-6 で解消予定;
+   多材料 MC 輸送 → W-8 で解消予定)。
+10. 新工程機能の仕様書に「エンジニアはこの工程の結果をどう確認するか」節
+   (可視化・抽出・ログ)を必須化(同レポート §4.2-5)。
 
 ## スコープ外(本計画では扱わない)
 
