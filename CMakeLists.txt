@@ -74,11 +74,22 @@ add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
 target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc compound_bca remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d fem topo amg block_solver topology_parallel newton adaptive_dt species_parallel rcm device_export fast_1d2d epitaxy silicide stress_physics sige sper)
+foreach(t mesh solver gmsh diffusion mc compound_bca remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d fem topo amg block_solver topology_parallel newton adaptive_dt species_parallel rcm device_export fast_1d2d epitaxy silicide stress_physics sige sper golden_flows)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})
 endforeach()
+
+add_executable(test_sprocess_parity tests/test_sprocess_parity.cpp)
+target_link_libraries(test_sprocess_parity PRIVATE cprocess_core)
+add_test(NAME sprocess_parity COMMAND test_sprocess_parity)
+# Executable specification for IMPLEMENTATION_PLAN_v2: asserts SProcess-parity
+# behavior that is NOT yet implemented. WILL_FAIL inverts the result so the
+# suite stays green while gaps remain; when a fix lands and a check starts
+# passing, ctest reports this test as failed -> move the now-passing check
+# into the regular suites and keep the remainder here.
+set_tests_properties(sprocess_parity PROPERTIES WILL_FAIL TRUE)
+
 
 if(CPROCESS_GPU)
   foreach(t gpu)

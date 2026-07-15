@@ -125,3 +125,30 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 
 計画全体は `docs/IMPLEMENTATION_PLAN.md`(初代・完了)および
 `docs/IMPLEMENTATION_PLAN_v2.md`(次期)を参照。
+
+### SProcess パリティテスト
+
+v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
+(CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
+現存 API のみで SProcess 的に正しい挙動をアサートし、現状は**全て未達**
+(0/9 PASS)。併せて現行機能の不変量を固定する golden シナリオ
+`tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
+
+| チェック | タスク ID | 現状 |
+|---|---|---|
+| スクリーン酸化膜による MC 注入の飛程減衰 (>5% 浅く) | W-8 | 未達(酸化膜貫通が Si 扱い、ピーク深さ同一) |
+| STI 酸化膜下の Si への遮蔽 (同深度で <50%) | W-8 | 未達(深度別濃度が裸 Si とほぼ同一, ratio≈1.0) |
+| 解析注入のスクリーン酸化膜オフセット (<0.8x) | W-8 | 未達(93.7 vs 97.5 nm、実質同一) |
+| photo/mask 後の保存 VTU にレジスト形状が現れる | W-7/A-7 | 未達(セル数がベースメッシュと同一・"resist" 記載なし) |
+| レジストスタック存在下で save_state が例外を出さない | W-7 | 未達("strip photoresist stack before save" を送出) |
+| deck の `etch` コマンド受理 | W-3 | 未達(unknown command) |
+| deck の `pdbset` コマンド受理 | W-3 | 未達(unknown command) |
+| 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 1.1e18 cm⁻³、約 7 桁の過小) |
+| Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | 未達(純 Deal-Grove、ratio=1.0000) |
+
+**WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
+終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
+exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** と報告
+する。個別チェックの進捗は実行ログのサマリ表(`N/9 parity checks passing`)で
+確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
+`test_<feature>`)へ移設し、残りを本スイートに留める。
