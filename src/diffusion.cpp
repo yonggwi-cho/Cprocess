@@ -1125,6 +1125,22 @@ void DiffusionSolver::step_once_ted(
   }
   CV = x;
 
+  // Floor CI/CV at zero before any reaction/cluster kinetics. The implicit
+  // diffusion solve is not monotone (the deferred non-orthogonal correction
+  // is explicit in the rhs), and at a sharp implant seed spike it can
+  // undershoot: measured at 800 C (probe, B 1e14/Rp 50nm "+1" seed, dt=1.2s)
+  // the peak cell went CI = +1.98e19 -> -7.5e18 in one step. A negative CI
+  // fed the cluster kinetics a negative supersaturation ratio, whose
+  // un-floored forward rate then produced negative cluster mass and
+  // unbounded mass creation (CI +8.9e22 in one substep) -- the 800 C TED
+  // blowup found by the literature-benchmark work. Point defects are
+  // clamped (not renormalized) exactly as the post-reaction clamp below
+  // already does; the added mass equals the (unphysical) undershoot.
+  for (int i = 0; i < nc; ++i) {
+    CI[i] = std::max(CI[i], 0.0);
+    CV[i] = std::max(CV[i], 0.0);
+  }
+
   // ── 1b. Reaction sub-cycling (linearized backward Euler). See run_ted()'s
   // (pre-S-5) header comment for the full derivation and the documented
   // deviation from the spec's forward-Euler sketch; unchanged here.
@@ -1174,11 +1190,18 @@ void DiffusionSolver::step_once_ted(
         const double mob = std::max(mobile[i], 0.0);
         const double c_act = (css > 0) ? std::min(mob, css) : mob;
         const bool gate = !(css > 0) || c_act > 0.1 * css;
+        // Floors below (ratio, cl_old, forward >= 0): a negative CI/CV --
+        // possible upstream despite the post-1a clamp if any future path
+        // reintroduces one -- must read as "no supersaturation drive"
+        // (ratio 0), never as a negative forward rate. An unfloored
+        // negative forward made min(dts*rf, mob) pick dts*rf itself,
+        // creating negative cluster mass and mobile mass from nothing
+        // (measured: the 800 C blowup; see the post-1a comment).
         double ratio = clp.uses_v ? CV[i] / pdp.cv_star : CI[i] / pdp.ci_star;
-        ratio = std::min(ratio, kClusterRatioCap);
+        ratio = std::min(std::max(ratio, 0.0), kClusterRatioCap);
         const double rf = gate ? clp.kf * c_act * c_act / kClusterCref * ratio : 0.0;
-        const double cl_old = clus[i];
-        const double forward = std::min(dts * rf, mob);
+        const double cl_old = std::max(clus[i], 0.0);
+        const double forward = std::min(std::max(dts * rf, 0.0), mob);
         const double cl_mid = cl_old + forward;
         const double mob_mid = mob - forward;
         const double cl_new = cl_mid / (1.0 + dts * clp.kr);
@@ -1186,7 +1209,13 @@ void DiffusionSolver::step_once_ted(
         const double mob_new = mob_mid + released;
         const double dcl = cl_new - cl_old;  // net cluster mass change (can be <0)
         clus[i] = cl_new;
-        mobile[i] = mob_new;
+        // Apply the kinetics DELTA to the true mobile value instead of
+        // replacing it with the floored-input result: if the dopant's own
+        // diffusion solve undershot (mobile < 0 at a spike cell), replacing
+        // would silently floor it and create mass (measured: +0.14% B at
+        // 850 C/60 s). The delta form conserves B + B_cl exactly
+        // (mob_new - mob == -(dcl) by construction).
+        mobile[i] += mob_new - mob;
         if (clp.uses_v) CV[i] = std::max(CV[i] - clp.pd_frac * dcl, 0.0);
         else CI[i] = std::max(CI[i] - clp.pd_frac * dcl, 0.0);
       }

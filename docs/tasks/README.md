@@ -130,8 +130,8 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 
 v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
 (CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
-現存 API のみで SProcess 的に正しい挙動をアサートし、現状は**全て未達**
-(0/11 PASS)。併せて現行機能の不変量を固定する golden シナリオ
+現存 API のみで SProcess 的に正しい挙動をアサートし、安定性 1 件は修正済みで通常スイートへ移設、残りは**未達**
+(0/10 PASS)。併せて現行機能の不変量を固定する golden シナリオ
 `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
 
 | チェック | タスク ID | 現状 |
@@ -145,8 +145,8 @@ v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_p
 | deck の `pdbset` コマンド受理 | W-3 | 未達(unknown command) |
 | 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 1.1e18 cm⁻³、約 7 桁の過小) |
 | Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | 未達(純 Deal-Grove、ratio=1.0000) |
-| TED 800 ℃ アニールの数値安定性(有限値・ドーズ保存) | C-2 | 未達(NaN 化または "ted: linear solver failed" 送出) |
-| TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(900 ℃/60 s で ~500-700x、文献 10-100x を約 1 桁過大) |
+| TED 750-850 ℃ アニールの数値安定性(有限値・総 B 質量保存) | C-2 | **修正済** → `test_ted.cpp` テスト 9 へ移設(根本原因: 1a 陰解のスパイク負値 → クラスタ forward 負値の質量生成。CI/CV 床 + forward/ratio/cl_old 床で修正) |
+| TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(修正後 900 ℃/60 s で ~300x に改善、なお文献 10-100x を超過 — 較正課題として残存) |
 
 **WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
 終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
@@ -154,7 +154,7 @@ exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** 
 する。個別チェックの進捗は実行ログのサマリ表(`N/9 parity checks passing`)で
 確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
 `test_<feature>`)へ移設し、残りを本スイートに留める。
-(サマリ表記は `N/11 parity checks passing`。)
+(サマリ表記は `N/10 parity checks passing`。)
 
 ### 定量ベンチマーク
 

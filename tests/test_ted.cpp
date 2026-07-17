@@ -217,6 +217,54 @@ int main() {
     CHECK(Ipeak > 0);
   }
 
+  // --- 9. Low-temperature stability (moved from test_sprocess_parity, C-2).
+  // Classic TED experiments run at 738-810 C (Packan/Plummer; Stolk et al.,
+  // JAP 81, 6031 (1997)); diffuse_ted must survive this regime. Before the
+  // fix in step_once_ted (CI/CV floor after the 1a solves + non-negative
+  // cluster forward rate), the 800 C case below blew up exponentially
+  // (Smax +3000x per step) via negative-CI -> negative cluster-forward
+  // feedback, ending in NaN or "ted: linear solver failed".
+  // Conservation is asserted on B + B_cl: at these temperatures most of the
+  // boron legitimately moves into BIC clusters (measured at 800 C/60 s:
+  // B 8.95e4 -> 3.05e4 atoms mobile, total B+B_cl conserved to 2e-12 rel).
+  for (double temp_c : {750.0, 800.0, 850.0}) {
+    SimState st;
+    proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, 1.0e-4, 3, 3, 100);
+    proc::set_region(st, "silicon", -1);
+    proc::implant_gauss(st, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false,
+                        0, 0, 0, 0, /*seed_damage=*/true, "gauss");
+    auto dose_of = [&](const char* n) {
+      auto it = st.fields.find(n);
+      if (it == st.fields.end()) return 0.0;
+      double d = 0;
+      for (std::size_t i = 0; i < it->second.size(); ++i)
+        d += it->second[i] * st.mesh.cell_vol[i];
+      return d;
+    };
+    const double tot0 = dose_of("B") + dose_of("B_cl");
+    DiffuseOpts d;
+    d.temp = temp_c + 273.15;
+    d.time = 60;
+    d.verbosity = 0;
+    proc::diffuse_ted(st, d);
+    bool finite = true;
+    for (const auto& [name, fvec] : st.fields)
+      for (double v : fvec)
+        if (!std::isfinite(v)) finite = false;
+    const double tot1 = dose_of("B") + dose_of("B_cl");
+    std::printf("low-T stability %g C: total B %.4e -> %.4e (rel %.2e)%s\n",
+                temp_c, tot0, tot1, std::fabs(tot1 - tot0) / tot0,
+                finite ? "" : "  ** NaN **");
+    CHECK(finite);
+    // Tolerance 5e-3 matches test_rta's established bound for the same
+    // mechanism: the end-of-Picard negative-concentration clamp adds a
+    // small amount of mass where the strongly TED-enhanced diffusion
+    // solve undershoots at the profile spike. Measured: 750 C 2.4e-11,
+    // 800 C 2.1e-12, 850 C 1.4e-3 (clamp-dominated; scales with D
+    // enhancement). The bug this test guards against produced 1e150+.
+    CHECK(std::fabs(tot1 - tot0) < 5e-3 * tot0);
+  }
+
   std::printf("ted tests passed\n");
   return 0;
 }

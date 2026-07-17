@@ -317,51 +317,13 @@ static void check_massoud(std::ostream* log) {
 // large, unambiguous factor — same WILL_FAIL contract as the checks above.
 // ---------------------------------------------------------------------------
 
-// [C-2] TED numerical stability at 800 C: a damage-seeded B implant followed
-// by diffuse_ted(800 C, 60 s) must keep every field finite and conserve the
-// B dose within 10%. Measured today: the coupled TED/cluster system blows up
-// at this temperature — depending on mesh, either every field (B, B_cl,
-// C311, I, V) goes to NaN or diffuse_ted throws "ted: linear solver failed"
-// (the same setup at 900 C is stable). Classic TED experiments (Packan/Plummer;
-// Stolk et al., JAP 81, 6031 (1997)) are performed at 738-810 C, so this is
-// exactly the regime the model must survive to be compared with literature.
-static void check_ted_800c_stability(std::ostream* log) {
-  SimState st = make_column(1.0e-4, 100, log);
-  proc::implant_gauss(st, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0, 0,
-                      /*seed_damage=*/true, "gauss", log);
-  double dose0 = 0;
-  {
-    const auto& f = st.fields.at("B");
-    for (std::size_t i = 0; i < f.size(); ++i)
-      dose0 += f[i] * st.mesh.cell_vol[i];
-  }
-  DiffuseOpts d;
-  d.temp = 1073.15;  // 800 C
-  d.time = 60;
-  d.verbosity = 0;
-  bool finite = true;
-  std::string detail;
-  try {
-    proc::diffuse_ted(st, d, log);
-    double dose1 = 0;
-    for (const auto& [name, f] : st.fields)
-      for (double v : f)
-        if (!std::isfinite(v)) finite = false;
-    {
-      const auto& f = st.fields.at("B");
-      for (std::size_t i = 0; i < f.size(); ++i)
-        dose1 += f[i] * st.mesh.cell_vol[i];
-    }
-    const bool conserved =
-        std::isfinite(dose1) && std::fabs(dose1 - dose0) < 0.10 * dose0;
-    record("C-2", "TED @800C finite + dose-conserving", finite && conserved,
-           fmtv("B dose before=%.3e after=%.3e atoms; want finite fields, "
-                "|d|<10%%", dose0, dose1));
-  } catch (const std::exception& e) {
-    record("C-2", "TED @800C finite + dose-conserving", false,
-           std::string("diffuse_ted threw: ") + e.what());
-  }
-}
+// [C-2] TED numerical stability at 750-850 C: FIXED (moved to
+// tests/test_ted.cpp test 9). Root cause: the 1a implicit CI/CV solve
+// undershoots at implant seed spikes (deferred non-orthogonal correction
+// is explicit); a negative CI fed the BIC kinetics a negative forward
+// rate, creating cluster mass from nothing. Fixed by flooring CI/CV
+// after the 1a solves and clamping ratio/forward/cl_old >= 0.
+
 
 // [C-2] TED enhancement magnitude: time-averaged Dt enhancement
 // (sigma_ted^2-sigma0^2)/(sigma_eq^2-sigma0^2) of a damage-seeded B marker
@@ -422,7 +384,6 @@ int main() {
   check_channeling_tail(&log);
   check_massoud(&log);
   // Tier B quantitative benchmarks (see tests/test_benchmarks.cpp header).
-  check_ted_800c_stability(&log);
   check_ted_enhancement_band(&log);
 
   int npass = 0;
