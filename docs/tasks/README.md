@@ -131,7 +131,7 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
 (CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
 現存 API のみで SProcess 的に正しい挙動をアサートし、現状は**全て未達**
-(0/9 PASS)。併せて現行機能の不変量を固定する golden シナリオ
+(0/11 PASS)。併せて現行機能の不変量を固定する golden シナリオ
 `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
 
 | チェック | タスク ID | 現状 |
@@ -145,6 +145,8 @@ v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_p
 | deck の `pdbset` コマンド受理 | W-3 | 未達(unknown command) |
 | 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 1.1e18 cm⁻³、約 7 桁の過小) |
 | Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | 未達(純 Deal-Grove、ratio=1.0000) |
+| TED 800 ℃ アニールの数値安定性(有限値・ドーズ保存) | C-2 | 未達(NaN 化または "ted: linear solver failed" 送出) |
+| TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(900 ℃/60 s で ~500-700x、文献 10-100x を約 1 桁過大) |
 
 **WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
 終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
@@ -152,3 +154,36 @@ exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** 
 する。個別チェックの進捗は実行ログのサマリ表(`N/9 parity checks passing`)で
 確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
 `test_<feature>`)へ移設し、残りを本スイートに留める。
+(サマリ表記は `N/11 parity checks passing`。)
+
+### 定量ベンチマーク
+
+パリティスイートが「方向性(SProcess 的挙動の有無)」を固定するのに対し、
+`tests/test_benchmarks.cpp`(CTest 名 `benchmarks`、通常スイート登録・常時
+PASS)は**公表済みのエンジン非依存な文献値**に対する定量精度を固定する。
+全参照値に出典コメント付き。信頼度で 3 層に分ける:
+
+- **Tier A(ハードアサート、現状 23 項目全 PASS)**: 実測の上でエンジンが
+  寛大な許容幅(飛程 ±25-30%、厚膜酸化 ±15-25%、拡散駆動は factor-2)内で
+  文献値に一致するもの。外部真値に紐づく恒久的な回帰アンカー。
+- **Tier B(大幅未達、`test_sprocess_parity.cpp` の WILL_FAIL 表に追加)**:
+  文献値から大きく明確に外れる項目。上表の C-2 2 件がこれに当たる。
+- **Tier C(INFO 表示のみ、アサートなし)**: 参照値の精度またはモデルの
+  適用範囲がハードアサートを正当化しない項目。
+
+| Tier | 項目 | 出典 | 参照値 vs 実測 |
+|---|---|---|---|
+| A | 解析注入 Rp/dRp: B 30/100, P 50/100, As 50/100 keV(12 項目) | LSS 表(Sze PSD / Plummer VLSI Ch.8) | 全て ±10% 以内(例: B30 Rp 100 vs 99 nm) |
+| A | MC 注入 Rp: P 50/100, As 50/100 keV | 同上(BCA はモーメント表非依存の独立検証) | +15〜21%(±30% 内) |
+| C | MC 注入 Rp: B 30/100 keV | 同上 | +34%(133 vs 100 nm 等)— 1.5x 未満で曖昧域 |
+| A | 酸化: dry 1000℃/120min, dry 1100℃/30・60min, wet 1000℃/30・60min | Deal & Grove, JAP 36, 3770 (1965) 定数から算出 | −12%〜+3.5% |
+| C | 酸化: dry 1000℃/30・60min(<70 nm 薄膜域) | 同上 | −21〜−36%(τ/Massoud 支配域、C-3 参照) |
+| A | B 真性拡散係数(埋め込みマーカ 1000℃/1h の σ² 成長) | Fair 1981: D_B=0.76·exp(−3.46eV/kT) | 比 1.03(factor-2 帯域) |
+| A | B drive-in 接合深さ(1100℃/30min, 背景 1e15) | 同上 + 解析ガウス解 | 1.008 vs 0.955 µm(+5.7%) |
+| C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~500-700x(Tier B でハード帯域化) |
+| C | As 電気活性上限 900/1000℃ | Nobili/Solmi(Plummer Ch.7) | 1.90/3.17e20 vs ~2/3e20 cm⁻³ — エンジン自身の固溶度フィットが同一出典由来のため**循環的**、アサート不可 |
+
+**注意(本節の限界)**: 本スイートはあくまで**文献値プロキシ**であり、
+SProcess そのものとの一致を保証するものではない。実際の SProcess 出力
+(同一条件の golden データ)が入手できれば、それを直接参照値として追加する
+方が保証としてはるかに強い。

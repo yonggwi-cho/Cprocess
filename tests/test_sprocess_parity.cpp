@@ -311,6 +311,101 @@ static void check_massoud(std::ostream* log) {
 }
 
 // ---------------------------------------------------------------------------
+// Tier B quantitative-benchmark checks (companion to tests/test_benchmarks.cpp,
+// which holds the passing Tier A asserts and Tier C informational rows).
+// These are literature-anchored targets the engine currently misses by a
+// large, unambiguous factor — same WILL_FAIL contract as the checks above.
+// ---------------------------------------------------------------------------
+
+// [C-2] TED numerical stability at 800 C: a damage-seeded B implant followed
+// by diffuse_ted(800 C, 60 s) must keep every field finite and conserve the
+// B dose within 10%. Measured today: the coupled TED/cluster system blows up
+// at this temperature — depending on mesh, either every field (B, B_cl,
+// C311, I, V) goes to NaN or diffuse_ted throws "ted: linear solver failed"
+// (the same setup at 900 C is stable). Classic TED experiments (Packan/Plummer;
+// Stolk et al., JAP 81, 6031 (1997)) are performed at 738-810 C, so this is
+// exactly the regime the model must survive to be compared with literature.
+static void check_ted_800c_stability(std::ostream* log) {
+  SimState st = make_column(1.0e-4, 100, log);
+  proc::implant_gauss(st, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0, 0,
+                      /*seed_damage=*/true, "gauss", log);
+  double dose0 = 0;
+  {
+    const auto& f = st.fields.at("B");
+    for (std::size_t i = 0; i < f.size(); ++i)
+      dose0 += f[i] * st.mesh.cell_vol[i];
+  }
+  DiffuseOpts d;
+  d.temp = 1073.15;  // 800 C
+  d.time = 60;
+  d.verbosity = 0;
+  bool finite = true;
+  std::string detail;
+  try {
+    proc::diffuse_ted(st, d, log);
+    double dose1 = 0;
+    for (const auto& [name, f] : st.fields)
+      for (double v : f)
+        if (!std::isfinite(v)) finite = false;
+    {
+      const auto& f = st.fields.at("B");
+      for (std::size_t i = 0; i < f.size(); ++i)
+        dose1 += f[i] * st.mesh.cell_vol[i];
+    }
+    const bool conserved =
+        std::isfinite(dose1) && std::fabs(dose1 - dose0) < 0.10 * dose0;
+    record("C-2", "TED @800C finite + dose-conserving", finite && conserved,
+           fmtv("B dose before=%.3e after=%.3e atoms; want finite fields, "
+                "|d|<10%%", dose0, dose1));
+  } catch (const std::exception& e) {
+    record("C-2", "TED @800C finite + dose-conserving", false,
+           std::string("diffuse_ted threw: ") + e.what());
+  }
+}
+
+// [C-2] TED enhancement magnitude: time-averaged Dt enhancement
+// (sigma_ted^2-sigma0^2)/(sigma_eq^2-sigma0^2) of a damage-seeded B marker
+// (1e14 cm^-2, Rp 50 nm) after 60 s at 900 C must land inside a generous
+// [5x, 200x] band around the classic 10-100x marker-experiment range
+// (Packan & Plummer; Stolk et al. 1997, 750-810 C short anneals; enhancement
+// only decreases toward 900 C). Measured today: ~706x — the engine
+// overestimates the literature enhancement by roughly an order of magnitude.
+static void check_ted_enhancement_band(std::ostream* log) {
+  DiffuseOpts d;
+  d.temp = 1173.15;  // 900 C
+  d.time = 60;
+  d.verbosity = 0;
+  auto sigma_of = [](const SimState& s) {
+    const auto& f = s.fields.at("B");
+    const double ztop = s.mesh.bbox().hi.z;
+    double m = 0, md = 0, md2 = 0;
+    for (std::size_t i = 0; i < f.size(); ++i) {
+      const double w = f[i] * s.mesh.cell_vol[i];
+      const double dd = ztop - s.mesh.cell_cent[i].z;
+      m += w; md += w * dd; md2 += w * dd * dd;
+    }
+    const double mean = md / m;
+    return std::sqrt(std::max(0.0, md2 / m - mean * mean));
+  };
+  SimState eq = make_column(1.0e-4, 100, log);
+  proc::implant_gauss(eq, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0, 0,
+                      false, "gauss", log);
+  const double s0 = sigma_of(eq);
+  proc::diffuse(eq, d, log);
+  const double seq = sigma_of(eq);
+  SimState td = make_column(1.0e-4, 100, log);
+  proc::implant_gauss(td, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0, 0,
+                      true, "gauss", log);
+  proc::diffuse_ted(td, d, log);
+  const double sted = sigma_of(td);
+  const double enh = (sted * sted - s0 * s0) / (seq * seq - s0 * s0);
+  record("C-2", "TED enhancement in classic band",
+         std::isfinite(enh) && enh >= 5.0 && enh <= 200.0,
+         fmtv("Dt enhancement=%.1fx (eq sigma->%.4g cm); want 5-200x "
+              "(lit 10-100x @750-810C)", enh, seq));
+}
+
+// ---------------------------------------------------------------------------
 int main() {
   std::ostringstream log;
   std::printf("SProcess-parity executable specification (IMPLEMENTATION_PLAN_v2)\n");
@@ -326,6 +421,9 @@ int main() {
                      "pdbset key=oed.theta value=0.02");
   check_channeling_tail(&log);
   check_massoud(&log);
+  // Tier B quantitative benchmarks (see tests/test_benchmarks.cpp header).
+  check_ted_800c_stability(&log);
+  check_ted_enhancement_band(&log);
 
   int npass = 0;
   std::printf("\n===================== parity summary =====================\n");
