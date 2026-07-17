@@ -930,10 +930,22 @@ def test_params_python():
 
     s_eq = spread(ted=False)
     s_ted_fi0 = spread(ted=True, fi=0.0)
-    ratio = s_ted_fi0 / s_eq
-    print(f"  equilibrium spread={s_eq:.4f} um  ted(fi=0) spread={s_ted_fi0:.4f} um"
-          f"  ratio={ratio:.3f}")
-    check(ratio < 1.1, "B.fi=0.0 suppresses TED enhancement (ratio < 1.1)")
+    s_ted_fi1 = spread(ted=True, fi=1.0)
+    r0 = s_ted_fi0 / s_eq
+    r1 = s_ted_fi1 / s_eq
+    print(f"  equilibrium spread={s_eq:.4f} um  ted(fi=0) ratio={r0:.3f}"
+          f"  ted(fi=1) ratio={r1:.3f}")
+    # fi=0 must suppress the INTERSTITIAL channel, not all enhancement: the
+    # "+1" damage seed co-seeds a 5% vacancy excess (pd.damage.v_fraction,
+    # P2-1), so a modest vacancy-mediated enhancement legitimately remains
+    # (measured: fi=0 -> 1.40x vs fi=1 -> 7.29x; excess fraction 6.4%).
+    # The old assertion (ratio < 1.1) was calibrated against a bug: before
+    # the 750-850C TED fix, the negative-CI artifact annihilated the seeded
+    # vacancy excess too, hiding the physical vacancy channel.
+    check((r0 - 1.0) < 0.25 * (r1 - 1.0),
+          "B.fi=0.0 suppresses the interstitial TED channel "
+          "(fi=0 excess < 25% of fi=1 excess)")
+    check(r0 < 2.0, "B.fi=0.0 residual (vacancy-channel) enhancement < 2.0x")
 
     # Restore the compiled-in default so later tests aren't affected.
     sim.set_param("B.fi", 1.0)
