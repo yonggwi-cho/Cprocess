@@ -130,8 +130,8 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 
 v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
 (CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
-現存 API のみで SProcess 的に正しい挙動をアサートし、安定性 1 件は修正済みで通常スイートへ移設、残りは**未達**
-(0/10 PASS)。併せて現行機能の不変量を固定する golden シナリオ
+現存 API のみで SProcess 的に正しい挙動をアサートし、修正済 3 件(C-2 安定性・W-7 2 件)は通常スイートへ移設、残りは**未達**
+(0/8 PASS)。併せて現行機能の不変量を固定する golden シナリオ
 `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
 
 | チェック | タスク ID | 現状 |
@@ -139,8 +139,8 @@ v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_p
 | スクリーン酸化膜による MC 注入の飛程減衰 (>5% 浅く) | W-8 | 未達(酸化膜貫通が Si 扱い、ピーク深さ同一) |
 | STI 酸化膜下の Si への遮蔽 (同深度で <50%) | W-8 | 未達(深度別濃度が裸 Si とほぼ同一, ratio≈1.0) |
 | 解析注入のスクリーン酸化膜オフセット (<0.8x) | W-8 | 未達(93.7 vs 97.5 nm、実質同一) |
-| photo/mask 後の保存 VTU にレジスト形状が現れる | W-7/A-7 | 未達(セル数がベースメッシュと同一・"resist" 記載なし) |
-| レジストスタック存在下で save_state が例外を出さない | W-7 | 未達("strip photoresist stack before save" を送出) |
+| photo/mask 後の保存 VTU にレジスト形状が現れる | W-7/A-7 | **修正済** → `test_photo.cpp` へ移設(`proc::save` が既定で `<name>_stack.vtu` サイドカーを併記、`proc::save_stack` 新設。仕様: `W7_structure_inspection.md`) |
+| レジストスタック存在下で save_state が例外を出さない | W-7 | **修正済** → `test_state_io.cpp` へ移設(save_state/export_device は警告してレジスト抜きで続行に緩和) |
 | deck の `etch` コマンド受理 | W-3 | 未達(unknown command) |
 | deck の `pdbset` コマンド受理 | W-3 | 未達(unknown command) |
 | 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 1.1e18 cm⁻³、約 7 桁の過小) |
@@ -151,10 +151,9 @@ v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_p
 **WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
 終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
 exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** と報告
-する。個別チェックの進捗は実行ログのサマリ表(`N/9 parity checks passing`)で
+する。個別チェックの進捗は実行ログのサマリ表(`N/8 parity checks passing`)で
 確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
 `test_<feature>`)へ移設し、残りを本スイートに留める。
-(サマリ表記は `N/10 parity checks passing`。)
 
 ### 定量ベンチマーク
 

@@ -297,13 +297,16 @@ static void test_errors() {
   proc::init(st, "B", 1e15, -1, &log);
 
   proc::photo(st, 0.3e-4, 2, &log);
+  // W-7: a live resist stack no longer throws — warn and export without it.
+  std::ostringstream wlog;
   bool threw = false;
   try {
-    proc::export_device(st, kPrefix, &log);
+    proc::export_device(st, kPrefix, &wlog);
   } catch (const std::exception&) {
     threw = true;
   }
-  CHECK(threw);
+  CHECK(!threw);
+  CHECK(wlog.str().find("warning") != std::string::npos);
 
   proc::strip(st, &log);
   threw = false;

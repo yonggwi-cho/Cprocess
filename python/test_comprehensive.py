@@ -1103,6 +1103,66 @@ def test_save_load_state_python():
         os.unlink(path)
 
 
+def test_resist_inspection_python():
+    """W-7: save_stack / save sidecar / resist_mask structure inspection."""
+    print("test_resist_inspection_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.4, y=0.4, z=0.3, nx=4, ny=4, nz=3)
+    sim.region("silicon")
+    sim.photo(resist=0.2)
+    sim.mask(x1=0.0, x2=0.2)  # open the left half
+
+    tmpdir = tempfile.mkdtemp()
+    path = os.path.join(tmpdir, "w7.vtu")
+    stack_path = os.path.join(tmpdir, "w7_stack.vtu")
+    direct = os.path.join(tmpdir, "w7_direct.vtu")
+    try:
+        # save_stack: file exists and names the resist material mapping.
+        sim.save_stack(direct)
+        with open(direct) as f:
+            txt = f.read()
+        check("resist" in txt, "save_stack: VTU contains 'resist' label")
+
+        # save() default emits the stack sidecar.
+        sim.save(path)
+        check(os.path.exists(stack_path), "save: default writes _stack.vtu sidecar")
+
+        # include_stack=False suppresses the sidecar.
+        os.unlink(stack_path)
+        sim.save(path, include_stack=False)
+        check(not os.path.exists(stack_path),
+              "save: include_stack=False writes no sidecar")
+
+        # resist_mask: (N,4), materials in {0,1,2}, openings inside the window.
+        a = sim.resist_mask()
+        check(a.ndim == 2 and a.shape[1] == 4, "resist_mask: (N,4) array")
+        check(a.shape[0] > 0, "resist_mask: non-empty")
+        mats = set(np.unique(a[:, 3]).astype(int))
+        check(mats <= {0, 1, 2} and 1 in mats and 2 in mats,
+              "resist_mask: materials in {0,1,2} with resist and opening")
+        opened = a[a[:, 3] == 2]
+        check(np.all(opened[:, 0] < 0.2), "resist_mask: openings inside mask window")
+        check(np.all(opened[:, 2] > 0.3 - 1e-9),
+              "resist_mask: openings above the Si surface")
+
+        # save_state with a live stack: warns, does not raise.
+        cprc = os.path.join(tmpdir, "w7.cprc")
+        sim.save_state(cprc)
+        check(os.path.exists(cprc), "save_state: writes despite resist stack")
+
+        # resist_mask without a stack raises.
+        sim.strip()
+        raised = False
+        try:
+            sim.resist_mask()
+        except RuntimeError:
+            raised = True
+        check(raised, "resist_mask without photo raises")
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def test_export_device_python():
     """P3-h: device-simulator export (VTU point data + meta.json sidecar)."""
     print("test_export_device_python")
@@ -1522,6 +1582,7 @@ if __name__ == "__main__":
     test_etch_depo_p17()
     test_topo_p25()
     test_save_load_state_python()
+    test_resist_inspection_python()
     test_export_device_python()
     test_load_gds_python()
     test_mechanics_python()

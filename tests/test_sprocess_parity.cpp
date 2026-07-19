@@ -176,67 +176,13 @@ static void check_analytic_screening(std::ostream* log) {
 }
 
 // ---------------------------------------------------------------------------
-// [W-7/A-7] Resist visible in the saved structure: after photo+mask_polygon,
-// proc::save must write a VTU that contains the resist geometry — detectable
-// either as a "resist" material/region name in the file text or as more
-// cells than the base (pre-photo) mesh. Measured today: the VTU has exactly
-// the base cell count (288) and no "resist" string — the stack is invisible.
+// [W-7/A-7] Resist visible in saved VTU: FIXED (moved to tests/test_photo.cpp
+// test_resist_visible_in_vtu). proc::save now emits a "<base>_stack.vtu"
+// sidecar (via proc::save_stack) by default when a resist stack is present.
+// [W-7] save_state with resist stack: FIXED (moved to tests/test_state_io.cpp
+// test_errors). save_state/export_device now warn and save/export without the
+// stack instead of throwing.
 // ---------------------------------------------------------------------------
-static void check_resist_in_vtu(std::ostream* log) {
-  SimState st;
-  proc::mesh_box(st, 0, 0.4e-4, 0, 0.4e-4, 0, 0.3e-4, 4, 4, 3, log);
-  proc::set_region(st, "silicon", -1, log);
-  const std::size_t nc_base = st.mesh.cells.size();
-  proc::photo(st, 0.2e-4, 4, log);
-  std::vector<std::pair<double, double>> win = {
-      {0, 0}, {0.2e-4, 0}, {0.2e-4, 0.4e-4}, {0, 0.4e-4}};
-  proc::mask_polygon(st, win, log);
-
-  const std::string path = "/tmp/test_parity_resist.vtu";
-  bool pass = false;
-  std::string detail;
-  try {
-    proc::save(st, path, log);
-    std::ifstream f(path);
-    const std::string s((std::istreambuf_iterator<char>(f)),
-                        std::istreambuf_iterator<char>());
-    // Count "<Piece ... NumberOfCells=" to detect saved cell count.
-    std::size_t ncells = 0;
-    const std::size_t p = s.find("NumberOfCells=\"");
-    if (p != std::string::npos) ncells = std::strtoul(s.c_str() + p + 15, nullptr, 10);
-    const bool has_resist = s.find("resist") != std::string::npos;
-    pass = has_resist || ncells > nc_base;
-    char buf[160];
-    std::snprintf(buf, sizeof buf,
-                  "VTU 'resist' string: %s; cells saved=%zu vs base=%zu",
-                  has_resist ? "yes" : "no", ncells, nc_base);
-    detail = buf;
-  } catch (const std::exception& e) {
-    detail = std::string("save threw: ") + e.what();
-  }
-  record("W-7/A-7", "resist visible in saved VTU", pass, detail);
-}
-
-// ---------------------------------------------------------------------------
-// [W-7] save_state with a live resist stack must not throw (the stack should
-// be serialized or transparently carried). Measured today: throws
-// "save_state: strip photoresist stack before save".
-// ---------------------------------------------------------------------------
-static void check_save_state_with_resist(std::ostream* log) {
-  SimState st;
-  proc::mesh_box(st, 0, 0.4e-4, 0, 0.4e-4, 0, 0.3e-4, 4, 4, 3, log);
-  proc::set_region(st, "silicon", -1, log);
-  proc::photo(st, 0.2e-4, 4, log);
-  bool pass = true;
-  std::string detail = "save_state completed with stack present";
-  try {
-    proc::save_state(st, "/tmp/test_parity_resist.cprc", log);
-  } catch (const std::exception& e) {
-    pass = false;
-    detail = std::string("throws: ") + e.what();
-  }
-  record("W-7", "save_state with resist stack", pass, detail);
-}
 
 // ---------------------------------------------------------------------------
 // [W-3] Deck parity: `etch` and `pdbset` deck commands must be accepted by
@@ -376,8 +322,6 @@ int main() {
   check_mc_screen_oxide(&log);
   check_sti_shielding(&log);
   check_analytic_screening(&log);
-  check_resist_in_vtu(&log);
-  check_save_state_with_resist(&log);
   check_deck_command("W-3", "deck parity: etch command", "etch depth=0.1um");
   check_deck_command("W-3", "deck parity: pdbset command",
                      "pdbset key=oed.theta value=0.02");

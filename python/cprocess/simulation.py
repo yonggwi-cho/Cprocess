@@ -472,10 +472,38 @@ class Simulation:
         return self
 
     # -- output ----------------------------------------------------------------
-    def save(self, path: str) -> "Simulation":
-        """Write the mesh and all fields to a ParaView .vtu file."""
-        self._emit(_c.proc_save(self._st, path))
+    def save(self, path: str, include_stack: bool = True) -> "Simulation":
+        """Write the mesh and all fields to a ParaView .vtu file.
+
+        W-7: when a photoresist stack is present and include_stack is True
+        (default), also writes '<path minus .vtu>_stack.vtu' with the resist
+        geometry so the mask shape is inspectable in ParaView.
+        """
+        self._emit(_c.proc_save(self._st, path, bool(include_stack)))
         return self
+
+    def save_stack(self, path: str) -> "Simulation":
+        """Write the photoresist stack mesh to a ParaView .vtu file.
+
+        The cell array 'Material_si0_resist1_open2' labels each stack cell:
+        0 = Si substrate, 1 = resist, 2 = developed opening. Raises if no
+        resist stack is present (call photo() first).
+        """
+        self._emit(_c.proc_save_stack(self._st, path))
+        return self
+
+    def resist_mask(self) -> np.ndarray:
+        """Resist-stack cell centroids + material for quick inspection.
+
+        Returns an (N, 4) numpy array: columns x, y, z (micrometres) and
+        material index (0 = Si substrate, 1 = resist, 2 = developed opening).
+        Plot e.g. ``plt.scatter(a[:,0], a[:,1], c=a[:,3])``. Raises if no
+        resist stack is present. Query method: returns data, not self.
+        """
+        a = np.asarray(_c.proc_resist_mask(self._st), dtype=float)
+        if a.size:
+            a[:, :3] /= UM  # cm -> um
+        return a.reshape(-1, 4)
 
     def export_device(self, path_prefix: str) -> "Simulation":
         """Device-simulator export (P3-h): writes <prefix>.vtu (with

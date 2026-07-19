@@ -2652,7 +2652,38 @@ void sper(SimState& st, double temp_k, double time_s, std::ostream* log) {
   }
 }
 
-void save(SimState& st, const std::string& path, std::ostream* log) {
+void save_stack(SimState& st, const std::string& path, std::ostream* log) {
+  if (!st.has_stack)
+    throw std::runtime_error("save_stack: no resist stack present; photo first");
+  std::vector<int> mat(st.stack_cell_mat.begin(), st.stack_cell_mat.end());
+  // The array name self-documents the material mapping (and makes the resist
+  // identifiable by name in the file text): 0 = Si substrate, 1 = resist,
+  // 2 = developed opening.
+  const std::vector<std::pair<std::string, const std::vector<int>*>> ints = {
+      {"Material_si0_resist1_open2", &mat}};
+  write_vtu(path, st.stack, {}, ints);
+  if (log) {
+    long nr = 0, no = 0;
+    for (int m : mat) { if (m == 1) ++nr; else if (m == 2) ++no; }
+    *log << "[save_stack] wrote " << path << " (" << st.stack.cells.size()
+         << " cells, " << nr << " resist, " << no << " open)\n";
+  }
+}
+
+std::vector<std::array<double, 4>> resist_mask(const SimState& st) {
+  if (!st.has_stack)
+    throw std::runtime_error("resist_mask: no resist stack present; photo first");
+  std::vector<std::array<double, 4>> out;
+  out.reserve(st.stack.cells.size());
+  for (std::size_t ci = 0; ci < st.stack.cells.size(); ++ci) {
+    const Vec3& c = st.stack.cell_cent[ci];
+    out.push_back({c.x, c.y, c.z, (double)st.stack_cell_mat[ci]});
+  }
+  return out;
+}
+
+void save(SimState& st, const std::string& path, std::ostream* log,
+          bool include_stack) {
   need_mesh(st);
   const std::size_t nc = st.mesh.cells.size();
   std::vector<std::vector<double>> extra;
@@ -2697,6 +2728,18 @@ void save(SimState& st, const std::string& path, std::ostream* log) {
       {"Region", &region}};
   write_vtu(path, st.mesh, scalars, ints);
   if (log) *log << "[save] wrote " << path << "\n";
+  // W-7: an engineer saving a structure with resist present wants to see the
+  // resist — emit the stack sidecar by default.
+  if (include_stack && st.has_stack) {
+    std::string sp = path;
+    const std::string ext = ".vtu";
+    if (sp.size() >= ext.size() &&
+        sp.compare(sp.size() - ext.size(), ext.size(), ext) == 0)
+      sp.erase(sp.size() - ext.size());
+    sp += "_stack.vtu";
+    save_stack(st, sp, log);
+    if (log) *log << "[save] resist stack sidecar: " << sp << "\n";
+  }
 }
 
 std::vector<double> active_field(const SimState& st, const std::string& species,
@@ -2742,8 +2785,12 @@ std::map<std::string, double> list_params() {
 
 void save_state(SimState& st, const std::string& path, std::ostream* log) {
   need_mesh(st);
-  if (st.has_stack)
-    throw std::runtime_error("save_state: strip photoresist stack before save");
+  // W-7: warn instead of throwing — the stack is cheap to reconstruct
+  // (reapply photo/mask after load) and the hard throw made mid-flow
+  // checkpointing unusable.
+  if (st.has_stack && log)
+    *log << "[save_state] warning: resist stack present — the stack is NOT "
+            "serialized; reapply photo/mask after load\n";
   write_state(st, path);
   if (log)
     *log << "[save_state] wrote " << path << " (" << st.mesh.cells.size()
@@ -2759,8 +2806,10 @@ void load_state(SimState& st, const std::string& path, std::ostream* log) {
 
 void export_device(SimState& st, const std::string& path_prefix, std::ostream* log) {
   need_mesh(st);
-  if (st.has_stack)
-    throw std::runtime_error("export_device: strip photoresist stack before export");
+  // W-7: warn instead of throwing (same rationale as save_state).
+  if (st.has_stack && log)
+    *log << "[export_device] warning: resist stack present — the stack is NOT "
+            "exported; reapply photo/mask if needed\n";
   cp::write_device(st, path_prefix);
   std::size_t n_species = 0;
   for (const auto& [sym, conc] : st.fields) {

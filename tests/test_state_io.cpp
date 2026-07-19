@@ -177,16 +177,28 @@ static void test_errors() {
     proc::mesh_box(st, 0, 1.0e-4, 0, 1.0e-4, 0, 1.0e-4, 4, 4, 4, &log);
     proc::set_region(st, "silicon", -1, &log);
     proc::photo(st, 0.3e-4, 4, &log);
+    // W-7 (moved from test_sprocess_parity): save_state with a live resist
+    // stack must not throw — it warns and saves the base state without the
+    // stack.
+    std::ostringstream wlog;
     bool threw = false;
     try {
-      proc::save_state(st, kPath, &log);
+      proc::save_state(st, kPath, &wlog);
     } catch (const std::runtime_error&) {
       threw = true;
     }
-    CHECK(threw);
+    CHECK(!threw);
+    CHECK(wlog.str().find("warning") != std::string::npos);
+    CHECK(wlog.str().find("NOT be serialized") != std::string::npos ||
+          wlog.str().find("NOT serialized") != std::string::npos);
+    // The saved base state must load and match (stack members reset).
+    SimState ld;
+    proc::load_state(ld, kPath, &log);
+    CHECK(!ld.has_stack);
+    CHECK(ld.mesh.cells.size() == st.mesh.cells.size());
 
     proc::strip(st, &log);
-    proc::save_state(st, kPath, &log);  // should not throw
+    proc::save_state(st, kPath, &log);  // still fine without a stack
     std::remove(kPath);
   }
 

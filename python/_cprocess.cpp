@@ -681,12 +681,30 @@ PYBIND11_MODULE(_cprocess, m) {
       "'I' damage field seeded by implants with damage=True.");
 
   m.def("proc_save",
-      [](SimState& st, const std::string& path) {
+      [](SimState& st, const std::string& path, bool include_stack) {
         std::ostringstream log;
-        proc::save(st, path, &log);
+        proc::save(st, path, &log, include_stack);
         return log.str();
       },
-      py::arg("state"), py::arg("path"));
+      py::arg("state"), py::arg("path"), py::arg("include_stack") = true);
+
+  m.def("proc_save_stack",
+      [](SimState& st, const std::string& path) {
+        std::ostringstream log;
+        proc::save_stack(st, path, &log);
+        return log.str();
+      },
+      py::arg("state"), py::arg("path"),
+      "Write the photoresist stack mesh as a VTU with the integer cell "
+      "array Material_si0_resist1_open2 (0=Si, 1=resist, 2=opening).");
+
+  m.def("proc_resist_mask",
+      [](const SimState& st) {
+        return proc::resist_mask(st);
+      },
+      py::arg("state"),
+      "Stack-cell centroids + material: list of (x, y, z, material) per "
+      "stack cell, coordinates in cm, material 0=Si/1=resist/2=opening.");
 
   m.def("proc_save_state",
       [](SimState& st, const std::string& path) {

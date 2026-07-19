@@ -77,8 +77,10 @@ oxidize_2d/silicide/…)を変換器・デッキ・主経路が使えていな�
   (Si/resist/open)付き VTU 出力(既存 write_vtu 流用)。(2) `save()` に
   `include_stack` オプション(レジスト存在時 `<name>_stack.vtu` を併記)。
   (3) Python `Simulation.resist_mask()`(セル中心 + 材料の numpy 配列)。
-  (4) save_state/export_device の throw を「警告してレジスト抜きで続行」の
-  選択動作に緩和(既定は現行どおり throw、`force=` で緩和)。
+  (4) save_state/export_device の throw を「警告してレジスト抜きで続行」に
+  緩和(実装時判断: パリティチェックが素の呼び出しの非 throw を要求し、
+  photo/mask 状態は安価に再構築できるため、`force=` 待避なしで既定を
+  警告+続行に変更。詳細: `docs/tasks/W7_structure_inspection.md`)。
 - **DoD**: 複雑ポリゴンマスク(GDS 読込含む)を photo→mask_polygon→save_stack で
   ParaView 確認できる。pybind + Simulation + Python テスト三点セット。
 - 依存: なし。規模: 小。

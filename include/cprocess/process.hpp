@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <iosfwd>
 #include <map>
 #include <string>
@@ -270,10 +271,27 @@ void refine(SimState& st, const std::string& species, double rel_grad_thresh,
 void sper(SimState& st, double temp_k, double time_s,
          std::ostream* log = nullptr);
 
-void save(SimState& st, const std::string& path, std::ostream* log = nullptr);
+// Writes the mesh and all fields to a ParaView .vtu. W-7: when a photoresist
+// stack is present and include_stack is true (the default), also writes the
+// stack mesh to "<path minus .vtu>_stack.vtu" via save_stack so the resist
+// geometry is inspectable. include_stack=false reproduces the pre-W-7 output.
+void save(SimState& st, const std::string& path, std::ostream* log = nullptr,
+          bool include_stack = true);
 
-// Binary CPRC1 state save/load (P1-11). save_state throws if a photoresist
-// stack is present (strip it first) -- the stack is never serialized.
+// W-7: writes the photoresist stack mesh (SimState::stack) as a VTU with the
+// integer cell array "Material_si0_resist1_open2" (0 = Si substrate,
+// 1 = resist, 2 = developed opening). Throws if no stack is present.
+void save_stack(SimState& st, const std::string& path,
+                std::ostream* log = nullptr);
+
+// W-7: stack-cell centroids + material index for quick inspection:
+// one {x, y, z, material} entry (cm; material 0/1/2 as in save_stack) per
+// stack cell. Throws if no stack is present.
+std::vector<std::array<double, 4>> resist_mask(const SimState& st);
+
+// Binary CPRC1 state save/load (P1-11). W-7: when a photoresist stack is
+// present, save_state WARNS (to log) and saves the base state without the
+// stack -- the stack is never serialized; reapply photo/mask after load.
 // load_state rebuilds mesh topology via finalize() and resets stack members.
 void save_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
 void load_state(SimState& st, const std::string& path, std::ostream* log = nullptr);
@@ -281,8 +299,9 @@ void load_state(SimState& st, const std::string& path, std::ostream* log = nullp
 // P3-h: device-simulator export. Writes <prefix>.vtu (cell data as
 // proc::save + node-averaged dopant/active/NetDoping point data) and
 // <prefix>.meta.json (region/material table, boundary patch names, unit
-// system, species list, ND-NA sign convention). Throws if a photoresist
-// stack is present (strip first) or on I/O error.
+// system, species list, ND-NA sign convention). W-7: a live photoresist
+// stack produces a warning (not exported), no longer a throw. Throws on
+// I/O error.
 void export_device(SimState& st, const std::string& path_prefix,
                    std::ostream* log = nullptr);
 
