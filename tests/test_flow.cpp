@@ -177,6 +177,155 @@ static void test_deck_vs_proc_equivalence() {
 }
 
 // ---------------------------------------------------------------------------
+// [W-3] deck/Python API sync: new deck commands (etch, pdbset, oxidize2d,
+// sper, mechanics, refine, save_state/load_state, export_device, diffuse
+// ramp= option). Moved here from tests/test_sprocess_parity.cpp once the
+// commands started passing (etch/pdbset are the two checks that were
+// originally tagged [W-3] there); the rest are exercised as a bonus since
+// the same command-dispatch pattern made them cheap to add.
+// ---------------------------------------------------------------------------
+static void test_deck_new_commands() {
+  std::printf("test_deck_new_commands\n");
+
+  auto run = [](const std::string& body) {
+    std::istringstream in(
+        "mesh box xmax=0.4um ymax=0.4um zmax=0.4um nx=4 ny=4 nz=4\n"
+        "region all material=silicon\n" + body);
+    SimState st;
+    std::ostringstream log;
+    run_deck(in, st, log);
+    return st;
+  };
+
+  // etch: blanket depth reduces the mesh (true removal).
+  {
+    SimState st = run("etch depth=0.1um\n");
+    CHECK(st.has_mesh);
+    CHECK(st.mesh.bbox().hi.z < 0.4e-4 - 1e-10);
+  }
+  // etch: material-selective + polygon form must also parse and run.
+  {
+    SimState st = run(
+        "deposit material=oxide thickness=0.1um\n"
+        "etch depth=0.05um material=oxide "
+        "poly=(0,0),(0.2,0),(0.2,0.2),(0,0.2)\n");
+    CHECK(st.has_mesh);
+  }
+
+  // pdbset: sets a ParamDB override visible via proc::get_param.
+  {
+    SimState st = run("pdbset key=oed.theta value=0.02\n");
+    (void)st;
+    CHECK_NEAR(proc::get_param("oed.theta", -1.0), 0.02, 1e-12);
+    proc::set_param(st, "oed.theta", 0.01, nullptr);  // restore default
+  }
+
+  // oxidize2d: requires a nitride mask; blanket-Si case must throw.
+  {
+    bool threw = false;
+    try {
+      run("oxidize2d time=1min temp=1000C\n");
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+  // oxidize2d: with a nitride opening it must run to completion.
+  {
+    SimState st = run(
+        "deposit material=nitride thickness=0.05um\n"
+        "etch depth=0.05um material=nitride "
+        "poly=(0,0),(0.2,0),(0.2,0.4),(0,0.4)\n"
+        "oxidize2d time=2min temp=1000C ambient=wet\n");
+    CHECK(st.has_mesh);
+  }
+
+  // sper: no-op (with log, no throw) on a mesh with no damage field.
+  { SimState st = run("sper temp=600C time=1min\n"); CHECK(st.has_mesh); }
+
+  // mechanics: writes stress fields.
+  {
+    SimState st = run("mechanics temp=1000C time=0min\n");
+    CHECK(st.fields.count("sxx") > 0);
+  }
+
+  // refine: splits mesh, cell count increases.
+  {
+    SimState st = run(
+        "init species=B conc=1e15\n"
+        "implant species=B dose=1e13 rp=0.1um drp=0.02um\n"
+        "refine species=B thresh=0.3 passes=1\n");
+    CHECK(st.mesh.cells.size() > 4 * 4 * 4);
+  }
+
+  // save_state / load_state round-trip.
+  {
+    const std::string path = "test_deck_state.cprc";
+    SimState st = run("init species=B conc=1e15\n"
+                       "save_state file=" + path + "\n");
+    SimState st2;
+    std::istringstream in2("load_state file=" + path + "\n");
+    std::ostringstream log2;
+    run_deck(in2, st2, log2);
+    CHECK(st2.fields.count("B") > 0);
+    std::remove(path.c_str());
+  }
+
+  // export_device: writes <prefix>.vtu and <prefix>.meta.json.
+  {
+    const std::string prefix = "test_deck_export";
+    SimState st = run("init species=B conc=1e15\n"
+                       "export_device prefix=" + prefix + "\n");
+    (void)st;
+    CHECK(file_nonempty(prefix + ".vtu"));
+    CHECK(file_nonempty(prefix + ".meta.json"));
+    std::remove((prefix + ".vtu").c_str());
+    std::remove((prefix + ".meta.json").c_str());
+  }
+
+  // diffuse ramp= option: piecewise-linear RTA profile.
+  {
+    SimState st = run(
+        "init species=B conc=1e15\n"
+        "implant species=B dose=1e13 rp=0.1um drp=0.02um\n"
+        "diffuse ramp=0min:900C,1min:1050C,2min:900C\n");
+    CHECK(st.fields.count("B") > 0);
+  }
+
+  // Error paths: bad syntax / unknown key surfaces a line-numbered error.
+  {
+    bool threw = false;
+    try {
+      run("etch\n");  // missing depth=
+    } catch (const std::exception& e) {
+      threw = true;
+      CHECK(std::string(e.what()).find("deck line") != std::string::npos);
+    }
+    CHECK(threw);
+  }
+  {
+    bool threw = false;
+    try {
+      run("pdbset key=foo\n");  // missing value=
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+  {
+    bool threw = false;
+    try {
+      run("frobnicate depth=1um\n");  // unknown command
+    } catch (const std::exception&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+
+  std::printf("  deck new commands passed\n");
+}
+
+// ---------------------------------------------------------------------------
 // Test C: thread determinism.
 // ---------------------------------------------------------------------------
 #ifdef _OPENMP
@@ -352,6 +501,7 @@ static void test_ted_lifecycle() {
 int main() {
   test_full_front_end_flow();
   test_deck_vs_proc_equivalence();
+  test_deck_new_commands();
   test_thread_determinism();
   test_conservation_chain();
   test_ted_lifecycle();

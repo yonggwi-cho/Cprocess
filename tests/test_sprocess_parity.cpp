@@ -25,7 +25,6 @@
 #include <string>
 #include <vector>
 
-#include "cprocess/deck.hpp"
 #include "cprocess/diffusion.hpp"
 #include "cprocess/oxidation.hpp"
 #include "cprocess/process.hpp"
@@ -185,27 +184,10 @@ static void check_analytic_screening(std::ostream* log) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// [W-3] Deck parity: `etch` and `pdbset` deck commands must be accepted by
-// run_deck. Measured today: both raise "unknown command".
-// ---------------------------------------------------------------------------
-static void check_deck_command(const char* task, const char* name,
-                               const char* line) {
-  std::istringstream in(std::string(
-      "mesh box xmax=0.2um ymax=0.2um zmax=0.2um nx=2 ny=2 nz=2\n"
-      "region all material=silicon\n") + line + "\n");
-  SimState st;
-  std::ostringstream l2;
-  bool pass = true;
-  std::string detail = std::string("'") + line + "' accepted";
-  try {
-    run_deck(in, st, l2);
-  } catch (const std::exception& e) {
-    pass = false;
-    detail = std::string("'") + line + "' rejected: " + e.what();
-  }
-  record(task, name, pass, detail);
-}
-
+// [W-3] Deck parity: `etch` and `pdbset` deck commands: FIXED (moved to
+// tests/test_flow.cpp test_deck_new_commands, which also covers the other
+// new deck commands added alongside them: oxidize2d/sper/mechanics/refine/
+// save_state/load_state/export_device/diffuse ramp=).
 // ---------------------------------------------------------------------------
 // [C-1] Channeling tail in the analytic implant: dual-Pearson calibration
 // should keep the analytic B 40 keV pearson profile within 10x of the MC
@@ -322,9 +304,6 @@ int main() {
   check_mc_screen_oxide(&log);
   check_sti_shielding(&log);
   check_analytic_screening(&log);
-  check_deck_command("W-3", "deck parity: etch command", "etch depth=0.1um");
-  check_deck_command("W-3", "deck parity: pdbset command",
-                     "pdbset key=oed.theta value=0.02");
   check_channeling_tail(&log);
   check_massoud(&log);
   // Tier B quantitative benchmarks (see tests/test_benchmarks.cpp header).

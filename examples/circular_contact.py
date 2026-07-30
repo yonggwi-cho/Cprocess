@@ -66,8 +66,8 @@ def main():
     outside = near_surface & (dist2 >= r**2)
 
     area_hole = math.pi * (r * cp.UM)**2           # cm²
-    bb = sim.bbox()
-    area_total = (bb[1][0]-bb[0][0]) * (bb[1][1]-bb[0][1])
+    bb = sim.bbox()  # µm (W-3 fix)
+    area_total = ((bb[1][0]-bb[0][0]) * cp.UM) * ((bb[1][1]-bb[0][1]) * cp.UM)  # cm²
     area_mask  = area_total - area_hole
 
     dose_in  = float(np.sum(P[inside]  * vol[inside]))  / area_hole  if inside.any()  else 0

@@ -195,8 +195,8 @@ class Simulation:
         y-range defaults to the full device width.
         """
         bb = self.bbox()
-        yy1 = bb[0][1] if y1 is None else y1 * UM
-        yy2 = bb[1][1] if y2 is None else y2 * UM
+        yy1 = bb[0][1] * UM if y1 is None else y1 * UM
+        yy2 = bb[1][1] * UM if y2 is None else y2 * UM
         self._emit(_c.proc_mask(self._st, x1 * UM, x2 * UM, yy1, yy2))
         return self
 
@@ -590,10 +590,17 @@ class Simulation:
         c = self.field(species)
         v = self.cell_volumes
         bb = self.bbox()
-        area = (bb[1][0] - bb[0][0]) * (bb[1][1] - bb[0][1])
+        area = (bb[1][0] - bb[0][0]) * UM * (bb[1][1] - bb[0][1]) * UM
         return float(np.sum(c * v) / area) if area > 0 else 0.0
 
     def bbox(self):
-        """((x0,y0,z0),(x1,y1,z1)) in cm."""
+        """((x0,y0,z0),(x1,y1,z1)) in micrometres.
+
+        W-3 bug fix: this previously returned centimetres (the C++ core
+        unit) despite living in the microns/keV/min/°C engineering-unit
+        API -- every other Simulation accessor already converts. Internal
+        callers (mask(), dose()) were updated to re-apply UM where they
+        need cm.
+        """
         xyz = self._st.mesh.nodes
-        return (xyz.min(axis=0), xyz.max(axis=0))
+        return (xyz.min(axis=0) / UM, xyz.max(axis=0) / UM)

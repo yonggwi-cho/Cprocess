@@ -652,7 +652,7 @@ def test_segregation_dose_loss():
 
     # Si region as it exists before oxidation (with a small margin to avoid
     # counting the sliver of silicon consumed by the oxide growth itself).
-    z_si_before = sim.bbox()[1][2]
+    z_si_before = sim.bbox()[1][2] * 1e-4  # bbox() is in um; convert to cm
     z_margin = 0.02e-4  # 0.02 um, 2 cell heights
     cent0 = sim.cell_centroids * 1e-4  # -> cm
     vol0 = sim.cell_volumes
@@ -730,7 +730,7 @@ def test_nitride_barrier_python():
     sim = cp.Simulation()
     sim.mesh(0.2, 0.2, 0.4, 4, 4, 40)
     sim.region("silicon")
-    z_si_top = sim.bbox()[1][2] * 1e4  # bbox() is in cm; convert to µm
+    z_si_top = sim.bbox()[1][2]  # bbox() is in µm (W-3 fix)
     # Keep the implant well below the pre-deposit surface (rp=0.15, drp=0.02
     # => ~7.5 sigma from z_si_top) so deposit()'s nearest-centroid field
     # transfer (which copies the nearest *old* cell's value into new cells,

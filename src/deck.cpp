@@ -218,10 +218,42 @@ void cmd_bc(SimState& st, const Cmd& c, std::ostream& log) {
   proc::add_bc(st, c.str("species"), patch, c.num("conc", Unit::none), &log);
 }
 
+// "ramp" option: piecewise-linear RTA profile, e.g.
+// ramp=0:900C,10min:1050C,20min:900C -- semicolon- or comma-separated
+// "time:tempC" breakpoints, first breakpoint's time must be 0. Mirrors
+// Simulation.diffuse()'s ramp=[(t_min, T_celsius), ...] argument.
+bool parse_ramp(const Cmd& c, std::vector<std::pair<double, double>>& out) {
+  if (!c.has("ramp")) return false;
+  std::string s = c.kv.at("ramp");
+  std::replace(s.begin(), s.end(), ';', ',');
+  std::istringstream is(s);
+  std::string tok;
+  while (std::getline(is, tok, ',')) {
+    const auto colon = tok.find(':');
+    if (colon == std::string::npos) c.fail("ramp breakpoint must be 'time:tempC'");
+    double t, temp;
+    if (!parse_quantity(tok.substr(0, colon), Unit::time, t))
+      c.fail("cannot parse ramp time '" + tok.substr(0, colon) + "'");
+    if (!parse_quantity(tok.substr(colon + 1), Unit::temp, temp))
+      c.fail("cannot parse ramp temp '" + tok.substr(colon + 1) + "'");
+    out.push_back({t, temp});
+  }
+  if (out.empty() || out.front().first != 0.0)
+    c.fail("ramp must start at t=0");
+  return true;
+}
+
 void cmd_diffuse(SimState& st, const Cmd& c, std::ostream& log) {
   DiffuseOpts o;
-  o.time = c.num("time", Unit::time);
-  o.temp = c.num("temp", Unit::temp);
+  std::vector<std::pair<double, double>> ramp;
+  if (parse_ramp(c, ramp)) {
+    o.temp_profile = ramp;
+    o.temp = ramp.front().second;
+    o.time = ramp.back().first;
+  } else {
+    o.time = c.num("time", Unit::time);
+    o.temp = c.num("temp", Unit::temp);
+  }
   o.dt = c.num_or("dt", Unit::time, 0);
   o.field_enh = c.flag_or("fieldenh", true);
   o.nonortho = c.flag_or("nonortho", true);
@@ -271,6 +303,90 @@ void cmd_epitaxy(SimState& st, const Cmd& c, std::ostream& log) {
     doping[c.str("species")] = c.num("conc", Unit::none);
   proc::epitaxy(st, thickness_cm, temp_k, time_s, doping,
                c.flag_or("anneal", true), &log);
+}
+
+// Parses "poly=(x1,y1),(x2,y2),..." (µm-suffix-free, cm by default like
+// other length quantities without a unit suffix -- here we require explicit
+// values since suffixes inside a comma-list would collide with the
+// tuple parser; length is treated as um for convenience since most decks
+// use um for geometry). Empty when the key is absent.
+std::vector<std::pair<double, double>> parse_poly(const Cmd& c,
+                                                   const std::string& key) {
+  std::vector<std::pair<double, double>> poly;
+  if (!c.has(key)) return poly;
+  std::string s = c.kv.at(key);
+  // Strip all whitespace, then split on "),(" boundaries.
+  s.erase(std::remove_if(s.begin(), s.end(),
+                         [](unsigned char ch) { return std::isspace(ch); }),
+          s.end());
+  if (!s.empty() && s.front() == '(') s.erase(s.begin());
+  if (!s.empty() && s.back() == ')') s.pop_back();
+  std::istringstream is(s);
+  std::string tok;
+  while (std::getline(is, tok, ')')) {
+    if (!tok.empty() && tok.front() == ',') tok.erase(tok.begin());
+    if (!tok.empty() && tok.front() == '(') tok.erase(tok.begin());
+    if (tok.empty()) continue;
+    const auto comma = tok.find(',');
+    if (comma == std::string::npos) c.fail("bad poly vertex '" + tok + "'");
+    double x, y;
+    if (!parse_quantity(tok.substr(0, comma), Unit::length, x) ||
+        !parse_quantity(tok.substr(comma + 1), Unit::length, y))
+      c.fail("bad poly vertex '" + tok + "'");
+    poly.push_back({x, y});
+  }
+  return poly;
+}
+
+void cmd_etch(SimState& st, const Cmd& c, std::ostream& log) {
+  const double depth = c.num("depth", Unit::length);
+  const std::string material = c.has("material") ? c.str("material") : "";
+  const auto poly = parse_poly(c, "poly");
+  proc::etch(st, depth, poly, material, &log);
+}
+
+void cmd_pdbset(SimState& st, const Cmd& c, std::ostream& log) {
+  (void)st;
+  const std::string key = c.str("key");
+  const double value = c.num("value", Unit::none);
+  proc::set_param(st, key, value, &log);
+}
+
+void cmd_oxidize2d(SimState& st, const Cmd& c, std::ostream& log) {
+  const double time_s = c.num("time", Unit::time);
+  const double temp_k = c.num("temp", Unit::temp);
+  std::string ambient = c.has("ambient") ? lower(c.str("ambient")) : "dry";
+  if (ambient != "dry" && ambient != "wet")
+    c.fail("ambient must be 'dry' or 'wet'");
+  proc::oxidize_2d(st, time_s, temp_k, ambient == "wet", &log);
+}
+
+void cmd_sper(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::sper(st, c.num("temp", Unit::temp), c.num("time", Unit::time), &log);
+}
+
+void cmd_mechanics(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::mechanics(st, c.num("temp", Unit::temp), c.num("time", Unit::time), &log);
+}
+
+void cmd_refine(SimState& st, const Cmd& c, std::ostream& log) {
+  const std::string species = c.str("species");
+  const double thresh = c.num_or("thresh", Unit::none, 0.5);
+  const int passes = static_cast<int>(c.num_or("passes", Unit::none, 2));
+  const std::string axis = c.has("axis") ? lower(c.str("axis")) : "";
+  proc::refine(st, species, thresh, passes, axis, &log);
+}
+
+void cmd_save_state(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::save_state(st, c.str("file"), &log);
+}
+
+void cmd_load_state(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::load_state(st, c.str("file"), &log);
+}
+
+void cmd_export_device(SimState& st, const Cmd& c, std::ostream& log) {
+  proc::export_device(st, c.str("prefix"), &log);
 }
 
 void cmd_save(SimState& st, const Cmd& c, std::ostream& log) {
@@ -336,6 +452,15 @@ void run_deck(std::istream& in, SimState& st, std::ostream& log) {
     else if (c.name == "epitaxy") cmd_epitaxy(st, c, log);
     else if (c.name == "deposit") cmd_deposit(st, c, log);
     else if (c.name == "silicide") cmd_silicide(st, c, log);
+    else if (c.name == "etch") cmd_etch(st, c, log);
+    else if (c.name == "pdbset") cmd_pdbset(st, c, log);
+    else if (c.name == "oxidize2d") cmd_oxidize2d(st, c, log);
+    else if (c.name == "sper") cmd_sper(st, c, log);
+    else if (c.name == "mechanics") cmd_mechanics(st, c, log);
+    else if (c.name == "refine") cmd_refine(st, c, log);
+    else if (c.name == "save_state") cmd_save_state(st, c, log);
+    else if (c.name == "load_state") cmd_load_state(st, c, log);
+    else if (c.name == "export_device") cmd_export_device(st, c, log);
     else if (c.name == "save") cmd_save(st, c, log);
     else if (c.name == "print") cmd_print(st, c, log);
     else if (c.name == "stop") break;
