@@ -84,7 +84,8 @@ bool build_pearson4(double rp, double drp, double gamma, double beta,
 }  // namespace
 
 double apply_implant(const Mesh& mesh, const std::vector<char>& mask,
-                     const ImplantParams& p, std::vector<double>& conc) {
+                     const ImplantParams& p, std::vector<double>& conc,
+                     const std::vector<double>* depth_shift) {
   if (!p.dopant) throw std::runtime_error("implant: no dopant");
   if (p.dose <= 0) throw std::runtime_error("implant: dose must be > 0");
   if (p.rp <= 0 || p.drp <= 0)
@@ -105,7 +106,9 @@ double apply_implant(const Mesh& mesh, const std::vector<char>& mask,
   for (std::size_t ci = 0; ci < mesh.cells.size(); ++ci) {
     if (!mask.empty() && !mask[ci]) continue;
     const Vec3& c = mesh.cell_cent[ci];
-    const double d = ztop - c.z;
+    double d = ztop - c.z;
+    // W-8: per-cell screening shift (Si-equivalent thickness of overlayers).
+    if (depth_shift) d += (*depth_shift)[ci];
     double v;
     if (use_pearson) {
       v = p.dose * tbl.eval(d);

@@ -28,7 +28,18 @@ struct ImplantParams {
 
 // Adds the implant profile to `conc` for cells where mask is true.
 // Returns the number of implanted atoms (integral of the added profile).
+//
+// W-8: `depth_shift`, when non-null, is a per-cell correction added to the
+// depth argument d = z_top - z before the profile is evaluated. It encodes
+// column-wise screening by overlying non-silicon layers: for each layer of
+// thickness t above the cell the shift contributes (S_layer/S_Si - 1)*t
+// (Si-equivalent thickness minus the physical thickness already contained
+// in d). Cells whose profile falls inside the screen layer simply receive
+// the deep (attenuated) part of the profile — the screened-off dose is NOT
+// renormalized into silicon (physical dose loss, matching the MC behavior).
+// Passing nullptr reproduces the legacy behavior bit-identically.
 double apply_implant(const Mesh& mesh, const std::vector<char>& mask,
-                     const ImplantParams& p, std::vector<double>& conc);
+                     const ImplantParams& p, std::vector<double>& conc,
+                     const std::vector<double>* depth_shift = nullptr);
 
 }  // namespace cp

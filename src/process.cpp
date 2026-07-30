@@ -1,6 +1,7 @@
 #include "cprocess/process.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <utility>
 
 #include "cprocess/ale_mover.hpp"
+#include "cprocess/cell_locator.hpp"
 #include "cprocess/device_export.hpp"
 #include "cprocess/fem.hpp"
 #include "cprocess/field_transfer.hpp"
@@ -175,6 +177,103 @@ std::vector<int> material_ids(const SimState& st) {
   return mat;
 }
 
+namespace {
+
+// ── W-8: material-aware implant transport ──────────────────────────────────
+
+// TargetMaterial table indexed directly by MatId (kMatSi..kMatMetal) for the
+// general MC path. material_table[0] must be the substrate (crystal Si).
+std::vector<TargetMaterial> mc_material_table() {
+  // poly-Si: same atomic density and stopping as silicon, but the grain
+  // structure suppresses channeling -> amorphous-Si approximation
+  // (crystal_si=false).
+  TargetMaterial poly = target_silicon();
+  poly.name = "poly";
+  poly.crystal_si = false;
+  // NiSi (kMatSilicide): rho=7.4 g/cm^3, molar mass 86.78 g/mol, 2 atoms per
+  // formula unit -> N = 7.4/86.78*2*6.022e23 ~= 1.03e23 cm^-3. Compound BCA
+  // with Ni (Z=28, M=58.69) and Si partners at 1:1.
+  // TODO(W-8): the TiSi2 phase shares kMatSilicide (the phase lives only in
+  // the region_material string, see materials.hpp) and is approximated by
+  // these NiSi constants at the MatId level.
+  TargetMaterial nisi{"NiSi", 21, 43.39, 1.03e23, false};
+  nisi.comp = {{28, 58.693, 0.5}, {14, 28.086, 0.5}};
+  // Ni metal (kMatMetal): rho=8.9 g/cm^3 -> N = 8.9/58.69*6.022e23 ~= 9.13e22.
+  // TODO(W-8): titanium shares kMatMetal and is approximated by Ni here.
+  TargetMaterial ni{"Ni", 28, 58.693, 9.13e22, false};
+  return {target_silicon(),  // kMatSi
+          target_oxide(),    // kMatOxide
+          target_nitride(),  // kMatNitride
+          poly,              // kMatPoly
+          target_vacuum(),   // kMatGas
+          nisi,              // kMatSilicide
+          ni};               // kMatMetal
+}
+
+// Lindhard-Scharff electronic-stopping coefficient (same expression as
+// kls_coeff in src/mc_implant.cpp) for the analytic screening ratio.
+double ls_coeff(int z1, double m1, int z2) {
+  return 3.83e-15 * std::pow(z1, 7.0 / 6.0) * z2 /
+         (std::pow(std::pow(z1, 2.0 / 3.0) + std::pow(z2, 2.0 / 3.0), 1.5) *
+          std::sqrt(m1));
+}
+
+// Per-length electronic stopping S ~ N * sum_i x_i * kLS(Z1, Z2_i) (Bragg
+// rule) — identical material constants (N, comp) to the MC transport, so the
+// analytic screening stays consistent with what the compound BCA produces.
+double ls_stopping(const TargetMaterial& t, int z1, double m1) {
+  if (t.comp.empty()) return t.n * ls_coeff(z1, m1, t.z);
+  double k = 0;
+  for (const auto& c : t.comp) k += c.x * ls_coeff(z1, m1, c.z);
+  return t.n * k;
+}
+
+// Per-cell depth shift for the analytic implant (W-8): for each masked cell,
+// march vertically from the cell centroid to the mesh top and accumulate
+// (S_layer/S_Si - 1) * segment_length over every non-silicon segment. Adding
+// this to d = z_top - z replaces the physical overlayer thickness (already
+// inside d) with its Si-equivalent thickness; silicon segments contribute 0.
+// Only called when the mesh contains non-Si cells — all-Si meshes take the
+// legacy path (bit-identical, no locator work).
+std::vector<double> analytic_screen_shift(const SimState& st,
+                                          const std::vector<char>& mask,
+                                          const std::vector<int>& mat,
+                                          int z1, double m1) {
+  const std::vector<TargetMaterial> table = mc_material_table();
+  const double s_si = ls_stopping(table[kMatSi], z1, m1);
+  std::array<double, kMatCount> ratio{};
+  for (int m = 0; m < kMatCount; ++m)
+    ratio[m] = ls_stopping(table[m], z1, m1) / s_si;
+
+  const CellLocator locator(st.mesh);
+  const BBox bb = st.mesh.bbox();
+  const double ztop = bb.hi.z;
+  const double h = (ztop - bb.lo.z) / 400.0;  // sampling step
+
+  std::vector<double> shift(st.mesh.cells.size(), 0.0);
+  for (std::size_t ci = 0; ci < st.mesh.cells.size(); ++ci) {
+    if (!mask.empty() && !mask[ci]) continue;
+    const Vec3& c = st.mesh.cell_cent[ci];
+    const double span = ztop - c.z;
+    if (span <= 0) continue;
+    const int n = std::max(1, static_cast<int>(std::ceil(span / h)));
+    const double dz = span / n;
+    double s = 0;
+    for (int k = 0; k < n; ++k) {
+      const Vec3 p{c.x, c.y, c.z + (k + 0.5) * dz};
+      const int cj = locator.locate(p);
+      if (cj < 0) continue;  // outside (shouldn't happen inside bbox)
+      const int m = mat[cj];
+      if (m == kMatSi) continue;
+      s += (ratio[m] - 1.0) * dz;
+    }
+    shift[ci] = s;
+  }
+  return shift;
+}
+
+}  // namespace
+
 int resolve_region(const SimState& st, const std::string& v) {
   char* end = nullptr;
   const long tag = std::strtol(v.c_str(), &end, 10);
@@ -287,7 +386,17 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
   auto& f = st.fields[p.dopant->symbol];
   f.resize(st.mesh.cells.size(), 0.0);
   const std::vector<double> before = seed_damage ? f : std::vector<double>{};
-  const double atoms = apply_implant(st.mesh, silicon_mask(st), p, f);
+  // W-8: column-wise screening by overlying non-Si layers. All-Si meshes pass
+  // depth_shift = nullptr and stay bit-identical to the legacy path.
+  const std::vector<char> simask = silicon_mask(st);
+  const std::vector<int> mat = material_ids(st);
+  std::vector<double> shift;
+  const bool any_non_si =
+      std::any_of(mat.begin(), mat.end(), [](int m) { return m != kMatSi; });
+  if (any_non_si)
+    shift = analytic_screen_shift(st, simask, mat, p.dopant->z, p.dopant->m);
+  const double atoms =
+      apply_implant(st.mesh, simask, p, f, any_non_si ? &shift : nullptr);
   if (seed_damage) seed_interstitials(st, before, f);
   bool used_pearson = false;
   if (p.profile == ImplantParams::Profile::pearson4) {
@@ -341,13 +450,44 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
   // transfer the silicon profile back onto the working mesh.
   if (st.has_stack) {
     const int nc_s = static_cast<int>(st.stack.cells.size());
+
+    // W-8: cells below the resist (stack_cell_mat == 0) inherit the BASE
+    // mesh's real material (oxide under resist etc.). The stack is an
+    // extend_mesh of the base, so the base cell is found by locating the
+    // stack cell centroid in the base mesh. The material index layout keeps
+    // {0=Si, 1=resist, 2=vacuum} and only APPENDS entries (3=oxide,
+    // 4=nitride, 5=poly, 6=NiSi, 7=Ni; gas reuses index 2 = vacuum), so a
+    // pure-Si-under-resist stack takes the exact legacy table and cell
+    // indices -> bit-identical RNG draw sequence (P3-a draw-order contract).
+    std::vector<int> stack_mat = st.stack_cell_mat;
+    std::vector<TargetMaterial> table = st.mat_table;
+    const std::vector<int> base_mat = material_ids(st);
+    const bool base_non_si = std::any_of(
+        base_mat.begin(), base_mat.end(), [](int m) { return m != kMatSi; });
+    if (base_non_si) {
+      const std::vector<TargetMaterial> full = mc_material_table();
+      table.push_back(full[kMatOxide]);     // 3
+      table.push_back(full[kMatNitride]);   // 4
+      table.push_back(full[kMatPoly]);      // 5
+      table.push_back(full[kMatSilicide]);  // 6
+      table.push_back(full[kMatMetal]);     // 7
+      // MatId -> stack material index.
+      const std::array<int, kMatCount> remap = {0, 3, 4, 5, 2, 6, 7};
+      const CellLocator base_loc(st.mesh);
+      for (int ci = 0; ci < nc_s; ++ci) {
+        if (stack_mat[ci] != 0) continue;  // resist/vacuum: unchanged
+        const int bj = base_loc.locate(st.stack.cell_cent[ci]);
+        if (bj >= 0) stack_mat[ci] = remap[base_mat[bj]];
+      }
+    }
+
     std::vector<char> stack_si(nc_s, 0);
     for (int ci = 0; ci < nc_s; ++ci)
-      stack_si[ci] = (st.stack_cell_mat[ci] == 0) ? 1 : 0;
+      stack_si[ci] = (stack_mat[ci] == 0) ? 1 : 0;
 
     p.has_window = false;  // full-surface beam; masking is physical
-    p.material_table = st.mat_table;
-    p.cell_material = &st.stack_cell_mat;
+    p.material_table = table;
+    p.cell_material = &stack_mat;
 
     std::vector<double> stack_conc(nc_s, 0.0);
     std::vector<double> stack_dmg;
@@ -385,6 +525,18 @@ McImplantStats implant_mc(SimState& st, const std::string& species, double dose,
       }
     }
     return s;
+  }
+
+  // W-8: general path — pass the shared structure representation's material
+  // tags (material_ids) to the multi-material BCA whenever the mesh contains
+  // ANY non-silicon cell. All-Si meshes keep the no-table call so the
+  // single_material fast path preserves bit-identical legacy behavior.
+  const std::vector<int> mat = material_ids(st);
+  const bool any_non_si =
+      std::any_of(mat.begin(), mat.end(), [](int m) { return m != kMatSi; });
+  if (any_non_si) {
+    p.material_table = mc_material_table();  // indexed by MatId, [0]=Si
+    p.cell_material = &mat;
   }
 
   std::vector<double> dmg;

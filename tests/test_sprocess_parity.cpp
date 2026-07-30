@@ -100,7 +100,7 @@ static void check_mc_screen_oxide(std::ostream* log) {
 
   SimState ox = make_column(0.5e-4, 50, log);
   const double z_si = ox.mesh.bbox().hi.z;  // Si surface (before oxide cap)
-  proc::deposit(ox, "oxide", 0.005e-4, 5, {}, log);
+  proc::deposit(ox, "oxide", 0.05e-4, 5, {}, log);  // W-8: 50nm (was 0.005e-4=5nm typo)
   proc::implant_mc(ox, "B", 1e13, 30.0, 40000, 0, 0, 11, 1, true, false, 0, 0,
                    0, 0, false, false, log);
   const double d_ox = si_peak_depth(ox, "B", z_si);
@@ -138,7 +138,7 @@ static void check_sti_shielding(std::ostream* log) {
   for (std::size_t i = 0; i < f.size(); ++i) {
     if (mat_of(st, (int)i) != "silicon") continue;
     const double d = z_surf - st.mesh.cell_cent[i].z;
-    if (d < 0.20e-4 || d > 0.24e-4) continue;  // just below the trench bottom
+    if (d < 0.28e-4 || d > 0.36e-4) continue;  // well below the trench bottom
     const double q = f[i] * st.mesh.cell_vol[i];
     if (st.mesh.cell_cent[i].x < 0.3e-4) { du += q; vu += st.mesh.cell_vol[i]; }
     else                                 { db += q; vb += st.mesh.cell_vol[i]; }
@@ -165,7 +165,7 @@ static void check_analytic_screening(std::ostream* log) {
 
   SimState ox = make_column(0.5e-4, 50, log);
   const double z_si = ox.mesh.bbox().hi.z;
-  proc::deposit(ox, "oxide", 0.005e-4, 5, {}, log);
+  proc::deposit(ox, "oxide", 0.05e-4, 5, {}, log);  // W-8: 50nm (was 0.005e-4=5nm typo)
   proc::implant_gauss(ox, "B", 1e13, 30.0, 0, 0, 0, false, 0, 0, 0, 0, log);
   const double d_ox = si_peak_depth(ox, "B", z_si);
 
