@@ -97,9 +97,18 @@ double apply_implant(const Mesh& mesh, const std::vector<char>& mask,
   const double s2v = std::sqrt(2.0) * p.drp;
   const double s2l = std::sqrt(2.0) * drl;
 
+  const bool is_dual = (p.profile == ImplantParams::Profile::dual);
   Pearson4Table tbl;
-  const bool use_pearson = (p.profile == ImplantParams::Profile::pearson4) &&
-                           build_pearson4(p.rp, p.drp, p.gamma, p.beta, tbl);
+  const bool use_pearson =
+      (p.profile == ImplantParams::Profile::pearson4 || is_dual) &&
+      build_pearson4(p.rp, p.drp, p.gamma, p.beta, tbl);
+
+  // [C-1] dual profile: (1-dp_frac) of the dose goes into the primary
+  // Pearson-IV peak (or Gaussian fallback), dp_frac into a one-sided
+  // exponential "channeling tail" beyond Rp -- see ImplantParams::dp_frac.
+  const bool use_tail = is_dual && p.dp_frac > 0.0 && p.dp_l > 0.0;
+  const double primary_frac = use_tail ? (1.0 - p.dp_frac) : 1.0;
+  const double tail_amp = use_tail ? (p.dp_frac * p.dose / p.dp_l) : 0.0;
 
   conc.resize(mesh.cells.size(), 0.0);
   double atoms = 0;
@@ -111,9 +120,13 @@ double apply_implant(const Mesh& mesh, const std::vector<char>& mask,
     if (depth_shift) d += (*depth_shift)[ci];
     double v;
     if (use_pearson) {
-      v = p.dose * tbl.eval(d);
+      v = primary_frac * p.dose * tbl.eval(d);
     } else {
-      v = peak * std::exp(-((d - p.rp) * (d - p.rp)) / (s2v * s2v));
+      v = primary_frac * peak *
+          std::exp(-((d - p.rp) * (d - p.rp)) / (s2v * s2v));
+    }
+    if (use_tail && d >= p.rp) {
+      v += tail_amp * std::exp(-(d - p.rp) / p.dp_l);
     }
     if (p.has_window) {
       v *= 0.5 * (std::erf((c.x - p.x1) / s2l) - std::erf((c.x - p.x2) / s2l));

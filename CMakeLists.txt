@@ -74,7 +74,7 @@ add_executable(nmos_locos_flow examples/nmos_locos_flow.cpp)
 target_link_libraries(nmos_locos_flow PRIVATE cprocess_core)
 
 enable_testing()
-foreach(t mesh solver gmsh diffusion mc compound_bca remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d fem topo amg block_solver topology_parallel newton adaptive_dt species_parallel rcm device_export fast_1d2d epitaxy silicide stress_physics sige sper golden_flows benchmarks implant_materials)
+foreach(t mesh solver gmsh diffusion mc compound_bca remesh ale oxidation field_transfer levelset mechanics resist photo integration ted units flow oxidize_flow segregation multimaterial activation rta pearson params etch_depo state_io gds dopant_clusters new_dopants oed oxidant ox2d fem topo amg block_solver topology_parallel newton adaptive_dt species_parallel rcm device_export fast_1d2d epitaxy silicide stress_physics sige sper golden_flows benchmarks implant_materials dual_pearson)
   add_executable(test_${t} tests/test_${t}.cpp)
   target_link_libraries(test_${t} PRIVATE cprocess_core)
   add_test(NAME ${t} COMMAND test_${t})

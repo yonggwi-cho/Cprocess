@@ -15,7 +15,7 @@ namespace cp {
 // With a mask window [x1,x2]x[y1,y2] the lateral spread uses the standard
 // error-function convolution with lateral straggle dRl.
 struct ImplantParams {
-  enum class Profile { gauss, pearson4 };
+  enum class Profile { gauss, pearson4, dual };
   const Dopant* dopant = nullptr;
   double dose = 0;          // cm^-2
   double rp = 0, drp = 0;   // cm
@@ -23,7 +23,17 @@ struct ImplantParams {
   bool has_window = false;
   double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
   Profile profile = Profile::gauss;
-  double gamma = 0.0, beta = 3.0;  // Pearson-IV moments (profile=pearson4)
+  double gamma = 0.0, beta = 3.0;  // Pearson-IV moments (profile=pearson4/dual)
+
+  // [C-1] profile=dual: a primary Pearson-IV peak (same as pearson4, carrying
+  // (1-dp_frac) of the dose) PLUS a "channeling tail" exponential contribution
+  // (carrying dp_frac of the dose) representing the MC channeling tail beyond
+  // Rp. Tail form: C_tail(d) = dp_frac*dose/dp_l * exp(-(d-rp)/dp_l) for
+  // d >= rp, 0 otherwise (a simple one-sided exponential; see
+  // docs/tasks/C1_implant_moments.md for the calibration against
+  // proc::implant_mc(channeling=true)). dp_frac<=0 or dp_l<=0 disables the
+  // tail (falls back to plain pearson4 behavior, scaled by (1-dp_frac)=1).
+  double dp_frac = 0.0, dp_l = 0.0;
 };
 
 // Adds the implant profile to `conc` for cells where mask is true.
