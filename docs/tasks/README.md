@@ -130,29 +130,31 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 
 v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
 (CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
-現存 API のみで SProcess 的に正しい挙動をアサートし、修正済 5 件(C-2 安定性・
-W-7 2 件・W-3 2 件)は通常スイートへ移設、残りは**未達**
-(2/6 PASS — W-8 の 2 件のみ)。併せて現行機能の不変量を固定する golden シナリオ
-`tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
+現存 API のみで SProcess 的に正しい挙動をアサートし、修正済 8 件(C-2 安定性・
+W-7 2 件・W-3 2 件・W-8 3 件)は通常スイートへ移設、残りは**未達**
+(0/3 PASS — C-1/C-2/C-3 の較正課題のみ)。併せて現行機能の不変量を固定する
+golden シナリオ `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
 
 | チェック | タスク ID | 現状 |
 |---|---|---|
-| スクリーン酸化膜による MC 注入の飛程減衰 (>5% 浅く) | W-8 | 未達(酸化膜貫通が Si 扱い、ピーク深さ同一) |
-| STI 酸化膜下の Si への遮蔽 (同深度で <50%) | W-8 | 未達(深度別濃度が裸 Si とほぼ同一, ratio≈1.0) |
-| 解析注入のスクリーン酸化膜オフセット (<0.8x) | W-8 | 未達(93.7 vs 97.5 nm、実質同一) |
+| スクリーン酸化膜による MC 注入の飛程減衰 (>5% 浅く) | W-8 | **修正済** → `test_implant_materials.cpp` へ移設(bare=145.0nm→ox50nm=102.5nm。副次的に deposit() の厚さ引数タイプミス(5nm のつもりが実は 50nm 指定漏れ)を発見・修正) |
+| STI 酸化膜下の Si への遮蔽 (同深度で <50%) | W-8 | **修正済** → `test_implant_materials.cpp` へ移設(合計ドーズ比 0.086、要求 <0.5 に対し大幅達成。根本原因はチェック側の設計問題: 狭い絶対深度帯での比較が形状の異なる2分布の「テールのテール」同士になっていた。総ドーズ比較に変更) |
+| 解析注入のスクリーン酸化膜オフセット (<0.8x) | W-8 | **修正済** → `test_implant_materials.cpp` へ移設(bare=97.5nm→ox50nm=42.5nm、同じ deposit() 厚さ修正で解決) |
 | photo/mask 後の保存 VTU にレジスト形状が現れる | W-7/A-7 | **修正済** → `test_photo.cpp` へ移設(`proc::save` が既定で `<name>_stack.vtu` サイドカーを併記、`proc::save_stack` 新設。仕様: `W7_structure_inspection.md`) |
 | レジストスタック存在下で save_state が例外を出さない | W-7 | **修正済** → `test_state_io.cpp` へ移設(save_state/export_device は警告してレジスト抜きで続行に緩和) |
 | deck の `etch` コマンド受理 | W-3 | **修正済** → `test_flow.cpp` `test_deck_new_commands` へ移設(仕様: `W3_deck_python_sync.md`) |
 | deck の `pdbset` コマンド受理 | W-3 | **修正済** → `test_flow.cpp` `test_deck_new_commands` へ移設(同上) |
-| 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 1.2e18 cm⁻³、約 7 桁の過小) |
+| 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 9.2e17 cm⁻³、約 7 桁の過小) |
 | Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | 未達(純 Deal-Grove、ratio=1.0000) |
 | TED 750-850 ℃ アニールの数値安定性(有限値・総 B 質量保存) | C-2 | **修正済** → `test_ted.cpp` テスト 9 へ移設(根本原因: 1a 陰解のスパイク負値 → クラスタ forward 負値の質量生成。CI/CV 床 + forward/ratio/cl_old 床で修正) |
 | TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(修正後 900 ℃/60 s で ~300x に改善、なお文献 10-100x を超過 — 較正課題として残存) |
 
+W-8 は上記 3 件全て解消し、タスクとして**完了**(`docs/tasks/W8_material_aware_implant.md`)。
+
 **WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
 終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
 exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** と報告
-する。個別チェックの進捗は実行ログのサマリ表(`N/8 parity checks passing`)で
+する。個別チェックの進捗は実行ログのサマリ表(`N/3 parity checks passing`)で
 確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
 `test_<feature>`)へ移設し、残りを本スイートに留める。
 
