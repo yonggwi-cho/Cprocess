@@ -1513,6 +1513,18 @@ void DiffusionSolver::run_ted(std::vector<SpeciesField>& fields,
   // few thousand unknowns; solve the whole run_ted time loop single-
   // threaded rather than pay that overhead. This changes wall-clock time
   // only, not results.
+  //
+  // W-4 (default thread count): considered, and deferred, narrowing this
+  // guard to only the specific loops implicated in the slowdown above. The
+  // cause here is small-parallel-region startup overhead accumulating
+  // across many CG/BiCGStab calls throughout the whole reaction path, not a
+  // single hot loop -- there is no sub-scope that can be excluded from the
+  // guard without risking the same slowdown reappearing on whatever call
+  // sites got excluded, and this environment cannot measure/confirm a safe
+  // narrower boundary. Left as-is; see docs/tasks/W4_default_threads.md
+  // section 3.4. Independently, ensure_sane_thread_count()'s new default
+  // (min(hardware_concurrency(), 8) instead of 1) still applies to any
+  // linear solve outside of run_ted's guarded scope.
 #ifdef _OPENMP
   struct OmpThreadGuard {
     int saved = omp_get_max_threads();

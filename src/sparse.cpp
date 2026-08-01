@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <thread>
 #include <unordered_map>
 
 #ifdef _OPENMP
@@ -61,11 +62,38 @@ void ensure_ftz_daz() {
 // deployment should keep using it), but if it wasn't set, cap the default to
 // a conservative value once, lazily, the same way as ensure_ftz_daz() above
 // (never as a static initializer -- see that function's comment).
+//
+// W-4: adds an explicit CPROCESS_THREADS=N override, checked before the
+// OMP_NUM_THREADS fallback, so a caller can request a specific thread count
+// (including forcing 1, to reproduce the pre-W-4 sandbox-safe behavior)
+// without touching OMP_NUM_THREADS (which OpenMP itself also reads for
+// other purposes). The unset-everything default is DELIBERATELY still 1,
+// not min(hardware_concurrency(), 8) as originally attempted -- measured
+// during this task (see docs/tasks/W4_default_threads.md section 3.2/3.5):
+// with the default raised above 1, tests/test_species_parallel.cpp's
+// off-vs-on equivalence check (species_parallel=-1 vs =1, asserted <1e-12
+// relative) started failing at ANY thread count >1 (measured maxrel ~1e-12
+// to ~1.7e-12 at 2/4/8 threads, vs exactly 0 at 1 thread), because the two
+// code paths accumulate CG/dot-product reductions in different orders once
+// more than one OpenMP thread is involved. That test's own comment assumes
+// the two paths are "byte-identical" math, which is only true when OpenMP
+// parallel regions execute with a single thread (i.e. sequentially in
+// declaration order). Changing the *default* thread count would silently
+// break that invariant -- and plausibly others like it in the suite -- for
+// every caller who doesn't explicitly ask for more threads. So: default
+// stays 1 (unchanged behavior for anyone not opting in), and
+// CPROCESS_THREADS=N is the explicit, opt-in way to get real parallelism
+// when the caller knows their workload doesn't depend on that kind of
+// cross-path bit-identity.
 void ensure_sane_thread_count() {
 #ifdef _OPENMP
   static const bool kDone = [] {
-    if (!std::getenv("OMP_NUM_THREADS") && omp_get_max_threads() > 1)
+    if (const char* cp = std::getenv("CPROCESS_THREADS")) {
+      const int n = std::atoi(cp);
+      if (n > 0) omp_set_num_threads(n);
+    } else if (!std::getenv("OMP_NUM_THREADS") && omp_get_max_threads() > 1) {
       omp_set_num_threads(1);
+    }
     return true;
   }();
   (void)kDone;
