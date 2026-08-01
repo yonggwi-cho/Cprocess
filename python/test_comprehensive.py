@@ -321,6 +321,69 @@ def test_oxidize_wet_faster():
     check(z_wet > z_dry, "oxidize: wet grows a thicker oxide than dry")
 
 
+def _oxidize_thickness(pressure_atm=1.0, hcl_frac=0.0, orient="<100>"):
+    sim = cp.Simulation()
+    sim.mesh(x=0.2, y=0.2, z=0.5, nx=4, ny=4, nz=50)
+    sim.region("silicon")
+    z_before = float(sim.cell_centroids[:, 2].max())
+    sim.oxidize(5, 1000, wet=False, pressure_atm=pressure_atm,
+                hcl_frac=hcl_frac, orient=orient)
+    z_after = float(sim.cell_centroids[:, 2].max())
+    return z_after - z_before
+
+
+def test_oxidize_pressure_hcl_orient_python():
+    """[C-3] pressure_atm/hcl_frac/orient qualitative direction checks, plus
+    bit-identity at their defaults."""
+    print("test_oxidize_pressure_hcl_orient_python")
+
+    rise_default = _oxidize_thickness()
+    rise_1atm = _oxidize_thickness(pressure_atm=1.0)
+    print(f"  rise default={rise_default:.6g} um  1atm={rise_1atm:.6g} um")
+    check(abs(rise_default - rise_1atm) < 1e-12,
+          "oxidize: pressure_atm=1.0 (default) reproduces the no-arg call")
+
+    rise_5atm = _oxidize_thickness(pressure_atm=5.0)
+    print(f"  rise 5atm={rise_5atm:.6g} um")
+    check(rise_5atm > rise_default,
+          "oxidize: higher pressure grows oxide faster")
+
+    rise_hcl = _oxidize_thickness(hcl_frac=0.03)
+    print(f"  rise hcl=3%={rise_hcl:.6g} um")
+    check(rise_hcl > rise_default, "oxidize: HCl grows oxide faster")
+
+    rise_111 = _oxidize_thickness(orient="<111>")
+    print(f"  rise <111>={rise_111:.6g} um")
+    check(rise_111 > rise_default, "oxidize: <111> grows faster than <100>")
+
+
+def test_oxidize_massoud_python():
+    """[C-3] Massoud thin-oxide enhancement via ParamDB opt-in (default
+    off -> bit-identical; opted-in -> >10% boost in the ~10 nm regime)."""
+    print("test_oxidize_massoud_python")
+
+    sim_off = cp.Simulation()
+    sim_off.mesh(x=0.3, y=0.3, z=0.3, nx=3, ny=3, nz=12)
+    sim_off.region("silicon")
+    z0_off = float(sim_off.cell_centroids[:, 2].max())
+    sim_off.oxidize(40, 900, wet=False)
+    grown_off = float(sim_off.cell_centroids[:, 2].max()) - z0_off
+
+    sim_off.set_param("ox.massoud.c", 0.9)
+    sim_off.set_param("ox.massoud.l", 0.01)
+    sim_on = cp.Simulation()
+    sim_on.mesh(x=0.3, y=0.3, z=0.3, nx=3, ny=3, nz=12)
+    sim_on.region("silicon")
+    z0_on = float(sim_on.cell_centroids[:, 2].max())
+    sim_on.oxidize(40, 900, wet=False)
+    grown_on = float(sim_on.cell_centroids[:, 2].max()) - z0_on
+    sim_off.set_param("ox.massoud.c", 0.0)  # reset for subsequent tests
+
+    print(f"  grown massoud-off={grown_off:.5g} um  massoud-on={grown_on:.5g} um")
+    check(grown_on > 1.10 * grown_off,
+          "oxidize: ox.massoud.c/l opt-in grows >10% more in thin regime")
+
+
 def _spread(sim, species):
     """Mass-weighted standard deviation of a profile along z (micrometres)."""
     c = sim.field(species)
@@ -901,6 +964,68 @@ def test_pearson_python():
     except ValueError:
         threw = True
     check(threw, "mc=True with profile='pearson' raises ValueError")
+
+
+# ---------------------------------------------------------------------------
+def test_dual_pearson_python():
+    """C-1: dual-Pearson (primary Pearson-IV + channeling tail) analytic
+    implant, and the extended (1 keV..3 MeV) moment table."""
+    print("test_dual_pearson_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.2, y=0.2, z=1.2, nx=2, ny=2, nz=240)
+    sim.region("silicon")
+    sim.implant("B", dose=1e14, energy=80, profile="dual")
+    check(abs(sim.dose("B") / 1e14 - 1) < 0.01, "dual dose conserved")
+
+    # ParamDB override changes the tail: frac=0 should reduce the deep-tail
+    # concentration relative to a larger explicit frac.
+    sim0 = cp.Simulation()
+    sim0.mesh(x=0.3, y=0.3, z=0.8, nx=3, ny=3, nz=160)
+    sim0.region("silicon")
+    sim0.set_param("B.dp.frac", 0.0)
+    sim0.implant("B", dose=1e14, energy=40, profile="dual")
+    c0 = sim0.field("B")
+    z0 = sim0.cell_centroids[:, 2]
+    d0 = z0.max() - z0
+    rp0 = d0[np.argmax(c0)]
+    tail_idx0 = np.argmin(np.abs(d0 - 1.5 * rp0))
+    c_notail = c0[tail_idx0]
+
+    sim1 = cp.Simulation()
+    sim1.mesh(x=0.3, y=0.3, z=0.8, nx=3, ny=3, nz=160)
+    sim1.region("silicon")
+    sim1.set_param("B.dp.frac", 0.20)
+    sim1.set_param("B.dp.decay_mult", 2.0)
+    sim1.implant("B", dose=1e14, energy=40, profile="dual")
+    c1 = sim1.field("B")
+    c_tail = c1[tail_idx0]
+    check(c_tail > c_notail, "dp.frac ParamDB override raises the tail")
+    # Restore compiled-in defaults so later tests aren't affected (ParamDB is
+    # process-global, same convention as test_params_python).
+    sim1.set_param("B.dp.frac", 0.06)
+    sim1.set_param("B.dp.decay_mult", 2.0)
+
+    # Extended moment table: energies far outside the legacy 10-200 keV
+    # table (1 keV, 3 MeV) must still work end-to-end.
+    # At 1 keV, Rp (~3.3 nm) is smaller than dRp (~3.2 nm), so a real
+    # fraction of the Gaussian/Pearson mass nominally falls below the wafer
+    # surface (z<0) and is naturally clipped by the mesh boundary -- this is
+    # expected physics for such a shallow implant, not a conservation bug, so
+    # the tolerance here is loose (just checks the extension didn't break
+    # the implant).
+    sim_lo = cp.Simulation()
+    sim_lo.mesh(x=0.2, y=0.2, z=0.05, nx=2, ny=2, nz=100)
+    sim_lo.region("silicon")
+    sim_lo.implant("B", dose=1e13, energy=1, profile="pearson")
+    frac_lo = sim_lo.dose("B") / 1e13
+    check(0.5 < frac_lo <= 1.0,
+         f"1 keV pearson dose in [0.5,1.0]x requested (surface clipping expected, got {frac_lo:.3f})")
+
+    sim_hi = cp.Simulation()
+    sim_hi.mesh(x=0.2, y=0.2, z=4.0, nx=2, ny=2, nz=200)
+    sim_hi.region("silicon")
+    sim_hi.implant("B", dose=1e13, energy=3000, profile="pearson")
+    check(abs(sim_hi.dose("B") / 1e13 - 1) < 0.02, "3 MeV pearson dose conserved")
 
 
 def test_params_python():
@@ -1559,6 +1684,8 @@ if __name__ == "__main__":
     test_etch_polygon()
     test_oxidize_dry()
     test_oxidize_wet_faster()
+    test_oxidize_pressure_hcl_orient_python()
+    test_oxidize_massoud_python()
     test_ted_enhancement()
     test_ted_interstitial_field()
     test_dopant_clusters_python()
@@ -1576,6 +1703,7 @@ if __name__ == "__main__":
     test_activation_python()
     test_rta_ramp_python()
     test_pearson_python()
+    test_dual_pearson_python()
     test_params_python()
     test_refine_python()
     test_refine_anisotropic_python()

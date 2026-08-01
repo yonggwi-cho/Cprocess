@@ -359,20 +359,34 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
                      bool seed_damage, const std::string& profile,
                      std::ostream* log) {
   need_mesh(st);
-  if (profile != "gauss" && profile != "pearson")
-    throw std::runtime_error("implant: profile must be gauss|pearson");
+  if (profile != "gauss" && profile != "pearson" && profile != "dual")
+    throw std::runtime_error("implant: profile must be gauss|pearson|dual");
   ImplantParams p;
   p.dopant = dopant_or_throw(species);
   p.dose = dose;
-  if (profile == "pearson") {
+  if (profile == "pearson" || profile == "dual") {
     if (!(energy_kev > 0))
-      throw std::runtime_error("pearson profile requires energy=");
+      throw std::runtime_error("pearson/dual profile requires energy=");
     double gamma = 0, beta = 3;
     if (!implant_moments(*p.dopant, energy_kev, p.rp, p.drp, gamma, beta))
       throw std::runtime_error("no range table for species; give rp/drp");
-    p.profile = ImplantParams::Profile::pearson4;
+    p.profile = (profile == "dual") ? ImplantParams::Profile::dual
+                                     : ImplantParams::Profile::pearson4;
     p.gamma = gamma;
     p.beta = beta;
+    if (profile == "dual") {
+      // [C-1] channeling-tail defaults, calibrated against
+      // proc::implant_mc(channeling=true) for B at 5/20/40/80 keV (see
+      // docs/tasks/C1_implant_moments.md): dose fraction into the tail and
+      // its exponential decay length (as a multiple of dRp). Overridable per
+      // ParamDB keys "<Sym>.dp.frac" / "<Sym>.dp.decay_mult".
+      const double frac = ParamDB::instance().get(
+          p.dopant->symbol + ".dp.frac", 0.06);
+      const double decay_mult = ParamDB::instance().get(
+          p.dopant->symbol + ".dp.decay_mult", 2.0);
+      p.dp_frac = frac;
+      p.dp_l = decay_mult * p.drp;
+    }
   } else if (energy_kev > 0) {
     if (!implant_range(*p.dopant, energy_kev, p.rp, p.drp))
       throw std::runtime_error("no range table for species; give rp/drp");
@@ -399,7 +413,8 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
       apply_implant(st.mesh, simask, p, f, any_non_si ? &shift : nullptr);
   if (seed_damage) seed_interstitials(st, before, f);
   bool used_pearson = false;
-  if (p.profile == ImplantParams::Profile::pearson4) {
+  const bool is_dual = (p.profile == ImplantParams::Profile::dual);
+  if (p.profile == ImplantParams::Profile::pearson4 || is_dual) {
     // Mirror apply_implant's Type-IV validity check for accurate logging
     // (apply_implant itself falls back silently to Gaussian when invalid).
     const double A = 10.0 * p.beta - 12.0 * p.gamma * p.gamma - 18.0;
@@ -410,11 +425,13 @@ double implant_gauss(SimState& st, const std::string& species, double dose,
       used_pearson = (b1 * b1 - 4.0 * b0 * b2) < 0.0;
     }
   }
+  std::string profile_tag = used_pearson ? "pearson4" : "gauss";
+  if (is_dual) profile_tag = used_pearson ? "dual(pearson4+tail)" : "dual(gauss+tail)";
   if (log)
     *log << "[implant] " << p.dopant->symbol << " gauss: dose="
          << fmt("%.3g", p.dose) << " cm^-2, Rp=" << fmt("%.4g", p.rp * 1e4)
          << " um, dRp=" << fmt("%.4g", p.drp * 1e4)
-         << " um, profile=" << (used_pearson ? "pearson4" : "gauss") << "\n";
+         << " um, profile=" << profile_tag << "\n";
   return atoms;
 }
 
@@ -1424,11 +1441,33 @@ bool is_oxide(const std::string& mat) {
 }  // namespace
 
 double oxidize(SimState& st, double time_s, double temp_k, bool wet,
-               std::ostream* log) {
+               std::ostream* log, double pressure_atm, double hcl_frac,
+               const std::string& orient) {
   need_mesh(st);
   if (st.has_stack)
     throw std::runtime_error("oxidize: resist stack is present; strip first");
   if (time_s <= 0) throw std::runtime_error("oxidize: time_s must be > 0");
+
+  // [C-3] Orientation factor: <111> Si has a ~1.68x faster linear
+  // (interfacial-reaction-limited) rate constant than <100>. Any string
+  // other than "<111>" is treated as <100> (factor 1.0, bit-identical).
+  const double orient_factor = (orient == "<111>")
+      ? ParamDB::instance().get("ox.orient.ratio111", 1.68)
+      : 1.0;
+  // [C-3] Massoud thin-oxide enhancement. Default OFF (ox.massoud.c = 0)
+  // so that proc::oxidize() with no ParamDB overrides reproduces the
+  // exact pre-C-3 (pure Deal-Grove) numbers bit-identically -- many
+  // existing tests (test_oxidize_flow.cpp's analytic-agreement check,
+  // etc.) assert bit-for-bit agreement with deal_grove_step(), and a
+  // change of default physics is not this task's mandate. Calibrated
+  // values C=0.9, L=10 nm (docs/tasks/C3_oxidation_calibration.md) are
+  // ready to opt into via `pdbset ox.massoud.c 0.9` / `pdbset ox.massoud.l
+  // 0.01` (or ParamDB::instance().set(...) from C++/Python): they give a
+  // ~40% boost at 10 nm (900 C dry) decaying to <4% by the >50 nm Tier-A
+  // thick-film benchmark regime, comfortably inside those benchmarks'
+  // existing +/-15-25% literature tolerance.
+  const double massoud_c = ParamDB::instance().get("ox.massoud.c", 0.0);
+  const double massoud_l = ParamDB::instance().get("ox.massoud.l", 0.01);
 
   // (b) Measure existing oxide thickness.
   const int nc0 = static_cast<int>(st.mesh.cells.size());
@@ -1468,8 +1507,9 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet,
 
   if (theta <= 0.0) {
     // ---- Legacy P1-6 path: one Deal-Grove step for the whole time_s. ----
-    const double x_new_um = deal_grove_step(x0_cm * 1e4, time_s / 60.0,
-                                            temp_k - 273.15, wet);
+    const double x_new_um = deal_grove_step_massoud(
+        x0_cm * 1e4, time_s / 60.0, temp_k - 273.15, wet, massoud_c,
+        massoud_l, pressure_atm, hcl_frac, orient_factor);
     const double dx_ox = x_new_um * 1e-4 - x0_cm;  // grown oxide, cm
 
     if (dx_ox <= 0) {
@@ -1677,8 +1717,9 @@ double oxidize(SimState& st, double time_s, double temp_k, bool wet,
     // running oxide thickness (exact, since deal_grove_step recomputes the
     // equivalent time from x0 each call -- chaining N sub-steps reproduces
     // the same trajectory as one big step).
-    const double x_new_um = deal_grove_step(x_running_cm * 1e4, dt_k / 60.0,
-                                            temp_k - 273.15, wet);
+    const double x_new_um = deal_grove_step_massoud(
+        x_running_cm * 1e4, dt_k / 60.0, temp_k - 273.15, wet, massoud_c,
+        massoud_l, pressure_atm, hcl_frac, orient_factor);
     double d_dx = x_new_um * 1e-4 - x_running_cm;
     if (d_dx < 0) d_dx = 0;
     x_running_cm = x_new_um * 1e-4;

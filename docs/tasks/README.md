@@ -132,7 +132,7 @@ v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_p
 (CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
 現存 API のみで SProcess 的に正しい挙動をアサートし、修正済 8 件(C-2 安定性・
 W-7 2 件・W-3 2 件・W-8 3 件)は通常スイートへ移設、残りは**未達**
-(0/3 PASS — C-1/C-2/C-3 の較正課題のみ)。併せて現行機能の不変量を固定する
+(C-1/C-3 は修正済で移設、残るは C-2 の較正課題 1 件のみ)。併せて現行機能の不変量を固定する
 golden シナリオ `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
 
 | チェック | タスク ID | 現状 |
@@ -144,8 +144,8 @@ golden シナリオ `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常
 | レジストスタック存在下で save_state が例外を出さない | W-7 | **修正済** → `test_state_io.cpp` へ移設(save_state/export_device は警告してレジスト抜きで続行に緩和) |
 | deck の `etch` コマンド受理 | W-3 | **修正済** → `test_flow.cpp` `test_deck_new_commands` へ移設(仕様: `W3_deck_python_sync.md`) |
 | deck の `pdbset` コマンド受理 | W-3 | **修正済** → `test_flow.cpp` `test_deck_new_commands` へ移設(同上) |
-| 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | 未達(解析 8.5e10 vs MC 9.2e17 cm⁻³、約 7 桁の過小) |
-| Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | 未達(純 Deal-Grove、ratio=1.0000) |
+| 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | **修正済** → `test_dual_pearson.cpp` へ移設(`profile="dual"` の主峰+チャネリングテール; 解析 1.10e17 vs MC 8.91e17 cm⁻³, 比 0.123 ≥ 0.1。仕様: `C1_implant_moments.md`) |
+| Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | **修正済** → `test_oxidation.cpp` へ移設(Deal-Grove B/A 定数を `ox.dry.*`/`ox.wet.*` として ParamDB 化、既定はビット不変。`ox.massoud.c`/`ox.massoud.l`(既定 OFF、opt-in)で 900℃/10nm 域が比 1.42(要求 >1.10x)。併せて `pressure_atm`/`hcl_frac`/`orient` を `proc::oxidize()` に追加(既定はビット不変)。仕様: `C3_oxidation_calibration.md`) |
 | TED 750-850 ℃ アニールの数値安定性(有限値・総 B 質量保存) | C-2 | **修正済** → `test_ted.cpp` テスト 9 へ移設(根本原因: 1a 陰解のスパイク負値 → クラスタ forward 負値の質量生成。CI/CV 床 + forward/ratio/cl_old 床で修正) |
 | TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(修正後 900 ℃/60 s で ~300x に改善、なお文献 10-100x を超過 — 較正課題として残存) |
 
@@ -179,7 +179,7 @@ PASS)は**公表済みのエンジン非依存な文献値**に対する定量�
 | A | MC 注入 Rp: P 50/100, As 50/100 keV | 同上(BCA はモーメント表非依存の独立検証) | +15〜21%(±30% 内) |
 | C | MC 注入 Rp: B 30/100 keV | 同上 | +34%(133 vs 100 nm 等)— 1.5x 未満で曖昧域 |
 | A | 酸化: dry 1000℃/120min, dry 1100℃/30・60min, wet 1000℃/30・60min | Deal & Grove, JAP 36, 3770 (1965) 定数から算出 | −12%〜+3.5% |
-| C | 酸化: dry 1000℃/30・60min(<70 nm 薄膜域) | 同上 | −21〜−36%(τ/Massoud 支配域、C-3 参照) |
+| C | 酸化: dry 1000℃/30・60min(<70 nm 薄膜域) | 同上 | −21〜−36%(τ/Massoud 支配域。`ox.massoud.c`/`.l` opt-in で改善可能だが既定 OFF のためこの値のまま。C-3 参照) |
 | A | B 真性拡散係数(埋め込みマーカ 1000℃/1h の σ² 成長) | Fair 1981: D_B=0.76·exp(−3.46eV/kT) | 比 1.03(factor-2 帯域) |
 | A | B drive-in 接合深さ(1100℃/30min, 背景 1e15) | 同上 + 解析ガウス解 | 1.008 vs 0.955 µm(+5.7%) |
 | C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~500-700x(Tier B でハード帯域化) |

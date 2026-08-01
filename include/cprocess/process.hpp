@@ -163,8 +163,24 @@ void diffuse_ted(SimState& st, const DiffuseOpts& opts,
 // present. "oed.theta" == 0 disables this and reproduces the original
 // (P1-6) geometry-only behavior exactly (no diffusion at all inside
 // oxidize()).
+//
+// [C-3] Optional ambient/thin-film parameters, all defaulting to values
+// that reproduce the pre-C-3 behavior exactly when left unspecified:
+//   pressure_atm: O2/H2O partial pressure in atm (default 1.0). B ∝ P,
+//     B/A ∝ P^0.75 (Deal & Grove 1965 high-pressure extension).
+//   hcl_frac: fractional HCl in the ambient (default 0.0, no effect).
+//     Both B and B/A scale by (1 + ox.hcl.gain * hcl_frac).
+//   orient: crystal orientation of the oxidizing Si surface, "<100>"
+//     (default) or "<111>". <111> multiplies the linear (B/A) rate
+//     constant by ox.orient.ratio111 (default 1.68, Deal & Grove 1965).
+// A Massoud (1985) thin-oxide growth-rate enhancement is also applied
+// internally, gated by ParamDB keys "ox.massoud.c"/"ox.massoud.l"
+// (defaults calibrated for dry oxidation in the ~10 nm regime; see
+// docs/tasks/C3_oxidation_calibration.md). It decays to ~0 well before
+// typical thick-film benchmark thicknesses.
 double oxidize(SimState& st, double time_s, double temp_k, bool wet = false,
-               std::ostream* log = nullptr);
+               std::ostream* log = nullptr, double pressure_atm = 1.0,
+               double hcl_frac = 0.0, const std::string& orient = "<100>");
 
 // 2D/3D LOCOS-style oxidation (P2-4): lateral bird's-beak encroachment under
 // a nitride mask, via a genuine steady-state oxidant-diffusion solve

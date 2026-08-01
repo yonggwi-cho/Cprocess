@@ -555,14 +555,20 @@ PYBIND11_MODULE(_cprocess, m) {
       "Returns a log string.");
 
   m.def("proc_oxidize",
-      [](SimState& st, double time_s, double temp_k, bool wet) {
+      [](SimState& st, double time_s, double temp_k, bool wet,
+         double pressure_atm, double hcl_frac, const std::string& orient) {
         std::ostringstream log;
-        proc::oxidize(st, time_s, temp_k, wet, &log);
+        proc::oxidize(st, time_s, temp_k, wet, &log, pressure_atm, hcl_frac,
+                      orient);
         return log.str();
       },
       py::arg("state"), py::arg("time_s"), py::arg("temp_k"),
-      py::arg("wet") = false,
+      py::arg("wet") = false, py::arg("pressure_atm") = 1.0,
+      py::arg("hcl_frac") = 0.0, py::arg("orient") = "<100>",
       "Blanket thermal oxidation (Deal-Grove). time in s, temp in K.\n"
+      "[C-3] pressure_atm (O2/H2O partial pressure, atm; B~P, B/A~P^0.75),\n"
+      "hcl_frac (fractional HCl in ambient), orient (\"<100>\" or \"<111>\",\n"
+      "<111> B/A x1.68) all default to values reproducing pre-C-3 behavior.\n"
       "Returns a log string.");
 
   m.def("proc_silicide",

@@ -270,7 +270,13 @@ void cmd_oxidize(SimState& st, const Cmd& c, std::ostream& log) {
   std::string ambient = c.has("ambient") ? lower(c.str("ambient")) : "dry";
   if (ambient != "dry" && ambient != "wet")
     c.fail("ambient must be 'dry' or 'wet'");
-  proc::oxidize(st, time_s, temp_k, ambient == "wet", &log);
+  // [C-3] Optional ambient/thin-film parameters, all defaulting to
+  // pre-C-3 behavior.
+  const double pressure_atm = c.num_or("pressure", Unit::none, 1.0);
+  const double hcl_frac = c.num_or("hcl", Unit::none, 0.0);
+  const std::string orient = c.has("orient") ? c.str("orient") : "<100>";
+  proc::oxidize(st, time_s, temp_k, ambient == "wet", &log, pressure_atm,
+               hcl_frac, orient);
 }
 
 void cmd_deposit(SimState& st, const Cmd& c, std::ostream& log) {

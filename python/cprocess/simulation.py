@@ -156,6 +156,12 @@ class Simulation:
         implant only; requires `energy=`, not rp/drp) built from the 4-moment
         table (Rp, dRp, gamma, beta); it falls back to Gaussian when the
         moments don't satisfy the Type-IV validity condition.
+        `profile="dual"` (C-1) adds an exponential "channeling tail" beyond
+        Rp on top of the Pearson-IV (or Gaussian-fallback) primary peak,
+        calibrated against `implant(mc=True, channeling=True)`; the tail's
+        dose fraction / decay length are overridable via ParamDB keys
+        `"<Sym>.dp.frac"` / `"<Sym>.dp.decay_mult"` (see
+        docs/tasks/C1_implant_moments.md).
         `lateral_wrap=True` (MC only) periodically wraps ions that exit the
         domain laterally instead of counting them as out_of_domain — useful
         for narrow 1D/2D fast-mode meshes (see mesh1d()) with a window that
@@ -322,15 +328,27 @@ class Simulation:
                                    dict(doping or {}), bool(anneal)))
         return self
 
-    def oxidize(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":
+    def oxidize(self, time: float, temp: float, *, wet: bool = False,
+                pressure_atm: float = 1.0, hcl_frac: float = 0.0,
+                orient: str = "<100>") -> "Simulation":
         """Blanket thermal oxidation of the exposed silicon top surface.
 
         time in minutes, temp in Celsius. Grows SiO2 per Deal-Grove
         (<100> Si); the surface rises by 0.56x and silicon is consumed
         by 0.44x of the grown oxide thickness.
+
+        [C-3] pressure_atm: O2/H2O partial pressure in atm (default 1.0);
+        B scales linearly with pressure, B/A as pressure**0.75.
+        hcl_frac: fractional HCl in the ambient (default 0.0, no effect);
+        both B and B/A grow with HCl content.
+        orient: "<100>" (default) or "<111>"; <111> multiplies the linear
+        (B/A) rate constant by ~1.68x. All three default to values that
+        reproduce pre-C-3 behavior exactly.
         """
         self._emit(_c.proc_oxidize(self._st, time * MIN,
-                                   _celsius_to_k(temp), bool(wet)))
+                                   _celsius_to_k(temp), bool(wet),
+                                   float(pressure_atm), float(hcl_frac),
+                                   str(orient)))
         return self
 
     def oxidize_2d(self, time: float, temp: float, *, wet: bool = False) -> "Simulation":

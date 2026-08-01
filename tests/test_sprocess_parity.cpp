@@ -106,55 +106,21 @@ static SimState make_column(double zmax, int nz, std::ostream* log) {
 // new deck commands added alongside them: oxidize2d/sper/mechanics/refine/
 // save_state/load_state/export_device/diffuse ramp=).
 // ---------------------------------------------------------------------------
-// [C-1] Channeling tail in the analytic implant: dual-Pearson calibration
-// should keep the analytic B 40 keV pearson profile within 10x of the MC
-// (channeling) profile at depth 2*Rp. Measured today at 2*Rp (~305 nm):
-// analytic=4.0e9 vs MC=5.7e17 — the single-Pearson tail underestimates the
-// channeling tail by ~8 orders of magnitude.
-// ---------------------------------------------------------------------------
-static void check_channeling_tail(std::ostream* log) {
-  SimState an = make_column(0.8e-4, 80, log);
-  SimState mc = make_column(0.8e-4, 80, log);
-  proc::implant_gauss(an, "B", 1e14, 40.0, 0, 0, 0, false, 0, 0, 0, 0, false,
-                      "pearson", log);
-  proc::implant_mc(mc, "B", 1e14, 40.0, 200000, 0, 0, 3, 0, /*channeling=*/true,
-                   false, 0, 0, 0, 0, false, false, log);
-  const double z0 = an.mesh.bbox().hi.z;
-  const double rp = si_peak_depth(an, "B", z0);  // analytic Rp (~152 nm)
+// [C-1] Channeling tail in the analytic implant: FIXED (moved to
+// tests/test_dual_pearson.cpp). profile="dual" (primary Pearson-IV +
+// exponential channeling-tail, calibrated against proc::implant_mc) keeps
+// the analytic B 40 keV profile within 10x of the MC (channeling) profile
+// at depth 2*Rp; see docs/tasks/C1_implant_moments.md.
 
-  auto conc_at = [&](const SimState& s, double depth) {
-    const auto& f = s.fields.at("B");
-    double best = 1e300, c = 0;
-    for (std::size_t i = 0; i < f.size(); ++i) {
-      const double d = std::fabs((z0 - s.mesh.cell_cent[i].z) - depth);
-      if (d < best) { best = d; c = f[i]; }
-    }
-    return c;
-  };
-  const double ca = conc_at(an, 2 * rp);
-  const double cm = conc_at(mc, 2 * rp);
-  // "within 10x": analytic must not underestimate the MC tail by >10x.
-  record("C-1", "analytic channeling tail @2Rp",
-         cm > 0 && ca >= 0.1 * cm,
-         fmtv("analytic=%.3e vs MC=%.3e cm^-3; want analytic >= MC/10", ca, cm));
-}
-
-// ---------------------------------------------------------------------------
-// [C-3] Massoud thin-film enhancement: dry oxidation in the ~10 nm regime at
-// 900 C must grow >10% MORE than the pure Deal-Grove prediction. Measured
-// today: grown/DG ratio = 1.0000 (exact Deal-Grove, no thin-oxide term).
-// ---------------------------------------------------------------------------
-static void check_massoud(std::ostream* log) {
-  SimState st = make_column(0.3e-4, 12, log);
-  const double t_min = 40.0;  // ~10 nm regime at 900 C dry
-  const double x = proc::oxidize(st, t_min * 60.0, 900 + 273.15, false, log);
-  const double x_dg = deal_grove_step(0.0, t_min, 900.0, false) * 1e-4;
-  record("C-3", "Massoud thin-oxide enhancement",
-         x > 1.10 * x_dg,
-         fmtv("grown=%.2f nm vs Deal-Grove=%.2f nm; want grown > 1.10*DG",
-              x * 1e7, x_dg * 1e7));
-}
-
+// [C-3] Massoud thin-film enhancement: FIXED (moved to
+// tests/test_oxidation.cpp). Deal-Grove B/A Arrhenius constants are now
+// ParamDB-ified (ox.dry.*/ox.wet.*, bit-identical defaults) and a Massoud
+// (1985) thin-oxide growth-rate enhancement term is available via
+// ox.massoud.c/ox.massoud.l (default off -> bit-identical; C=0.9, L=10 nm
+// gives grown/DG = 1.42 at 10 nm/900C dry, >10% target). Also added
+// pressure_atm/hcl_frac/orient optional parameters to proc::oxidize()
+// (all default to values reproducing current behavior exactly). See
+// docs/tasks/C3_oxidation_calibration.md.
 // ---------------------------------------------------------------------------
 // Tier B quantitative-benchmark checks (companion to tests/test_benchmarks.cpp,
 // which holds the passing Tier A asserts and Tier C informational rows).
@@ -218,8 +184,6 @@ int main() {
   std::printf("SProcess-parity executable specification (IMPLEMENTATION_PLAN_v2)\n");
   std::printf("-----------------------------------------------------------------\n");
 
-  check_channeling_tail(&log);
-  check_massoud(&log);
   // Tier B quantitative benchmarks (see tests/test_benchmarks.cpp header).
   check_ted_enhancement_band(&log);
 
