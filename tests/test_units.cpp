@@ -55,11 +55,13 @@ static void test_materials() {
   implant_range(*b, 80.0, rp80, drp80);
   CHECK(rp > std::min(rp50, rp80) && rp < std::max(rp50, rp80));
 
-  // Clamping.
+  // Clamping. C-1 extended the moment table to 1-3000 keV, so use energies
+  // outside that new range (0.1 keV below, 5000 keV above) to exercise
+  // clamp-to-endpoint behavior instead of interpolation.
   double rp_lo, drp_lo, rp_hi, drp_hi;
-  implant_range(*b, 5.0, rp_lo, drp_lo);
+  implant_range(*b, 0.1, rp_lo, drp_lo);
   CHECK_NEAR(rp_lo, b->range.front()[1], 1e-20);
-  implant_range(*b, 1000.0, rp_hi, drp_hi);
+  implant_range(*b, 5000.0, rp_hi, drp_hi);
   CHECK_NEAR(rp_hi, b->range.back()[1], 1e-20);
 
   // Diffusivity increasing in T.
