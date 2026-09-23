@@ -750,6 +750,27 @@ PYBIND11_MODULE(_cprocess, m) {
       "Per-cell electrically active concentration [cm^-3] (solid-solubility "
       "clamp); temp_k<=0 uses the last diffuse temperature.");
 
+  m.def("proc_sheet_resistance",
+      [](const SimState& st, const std::string& species, double z0, double z1) {
+        std::ostringstream log;
+        double rs = proc::sheet_resistance(st, species, z0, z1, &log);
+        return py::make_tuple(rs, log.str());
+      },
+      py::arg("state"), py::arg("species"), py::arg("z0") = 0.0,
+      py::arg("z1") = 0.0,
+      "Sheet resistance [Ohm/sq] over depth window [z0,z1] cm below the "
+      "surface (z1<=z0 selects the whole column). Returns (Rs, log).");
+
+  m.def("proc_junction_depth",
+      [](const SimState& st, const std::string& species, double bg_level) {
+        std::ostringstream log;
+        double xj = proc::junction_depth(st, species, bg_level, &log);
+        return py::make_tuple(xj, log.str());
+      },
+      py::arg("state"), py::arg("species"), py::arg("bg_level") = 1e15,
+      "Junction depth [cm] below the surface (net-dopant sign crossing). "
+      "Returns (Xj, log).");
+
   m.def("proc_set_param",
       [](SimState& st, const std::string& key, double value) {
         std::ostringstream log;

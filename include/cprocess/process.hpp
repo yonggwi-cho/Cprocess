@@ -343,6 +343,27 @@ std::vector<double> active_field(const SimState& st, const std::string& species,
 std::vector<std::vector<std::pair<double, double>>> load_gds(
     const std::string& path, int layer, std::ostream* log = nullptr);
 
+// C-2: sheet resistance [Ohm/sq] of `species` over the depth-below-surface
+// window [z0_cm, z1_cm] (z1_cm <= z0_cm, including the default 0,0, selects
+// the full silicon column). Integrates q * active_concentration *
+// irvin_mobility(300K)
+// over silicon cells only: Rs = 1 / integral(q * N_act(z) * mu(N_act(z)) dz).
+// Throws if the field does not exist or no silicon cells are found in range.
+double sheet_resistance(const SimState& st, const std::string& species,
+                        double z0_cm = 0.0, double z1_cm = 0.0,
+                        std::ostream* log = nullptr);
+
+// C-2: junction depth [cm] of `species` below the top surface: the depth at
+// which the net electrically-active dopant concentration (this species'
+// majority-carrier sign vs. all other dopant fields combined) changes sign,
+// found by linear interpolation between adjacent silicon cell centroids. If
+// no other dopant field provides an opposing-sign background, falls back to
+// the depth where this species' active concentration drops below
+// `bg_level_cm3` (default 1e15 cm^-3, typical lightly-doped substrate).
+// Throws if the field does not exist; returns 0 if no crossing is found.
+double junction_depth(const SimState& st, const std::string& species,
+                      double bg_level_cm3 = 1e15, std::ostream* log = nullptr);
+
 // ── Runtime parameter overrides (P1-10, cp::ParamDB) ──
 // Override any physical parameter consumed by cp::materials.cpp / the TED
 // loop / seed_interstitials at call time (raw core units). No key validation

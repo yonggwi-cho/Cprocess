@@ -328,6 +328,21 @@ double active_concentration(const Dopant& d, double conc, double temp_k) {
   return (css > 0) ? std::min(conc, css) : conc;
 }
 
+// C-2: Caughey-Thomas form majority-carrier mobility, Masetti et al. (1983)
+// Si @ 300K low-field parameters (electrons/holes). Overridable via ParamDB
+// (mob.<e|h>.* keys) for future recalibration; defaults are the standard
+// textbook-cited (Sze/Masetti) values used by SProcess-style Irvin curves.
+double irvin_mobility_cm2vs(double n_cm3, bool donor_type) {
+  const auto& P = ParamDB::instance();
+  const std::string pfx = donor_type ? "mob.e." : "mob.h.";
+  const double mu_min = P.get(pfx + "mu_min", donor_type ? 68.5 : 44.9);
+  const double mu_max = P.get(pfx + "mu_max", donor_type ? 1414.0 : 470.5);
+  const double n_ref = P.get(pfx + "nref", donor_type ? 9.20e16 : 2.23e17);
+  const double alpha = P.get(pfx + "alpha", donor_type ? 0.711 : 0.719);
+  const double n = std::max(n_cm3, 0.0);
+  return mu_min + (mu_max - mu_min) / (1.0 + std::pow(n / n_ref, alpha));
+}
+
 // Self-interstitial equilibrium concentration. Arrhenius fit giving ~1e13 cm^-3
 // at 1000 C, rising toward ~1e15 near the melting point (cf. Bracht et al.).
 double interstitial_cstar(double temp_k) {

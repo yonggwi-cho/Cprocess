@@ -126,14 +126,24 @@ C(校正データ)/ A(基盤投資)の 3 群・15 タスク。着手時に本デ
 計画全体は `docs/IMPLEMENTATION_PLAN.md`(初代・完了)および
 `docs/IMPLEMENTATION_PLAN_v2.md`(次期)を参照。
 
-### SProcess パリティテスト
+### SProcess パリティテスト(クローズ、2026-09)
 
 v2 ギャップの「実行可能な仕様書」として `tests/test_sprocess_parity.cpp`
-(CTest 名 `sprocess_parity`, **WILL_FAIL TRUE** 登録)を追加した。各チェックは
-現存 API のみで SProcess 的に正しい挙動をアサートし、修正済 8 件(C-2 安定性・
-W-7 2 件・W-3 2 件・W-8 3 件)は通常スイートへ移設、残りは**未達**
-(C-1/C-3 は修正済で移設、残るは C-2 の較正課題 1 件のみ)。併せて現行機能の不変量を固定する
-golden シナリオ `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常時 PASS)を追加。
+(CTest 名 `sprocess_parity`)を追加した。各チェックは現存 API のみで
+SProcess 的に正しい挙動をアサートし、**WILL_FAIL TRUE** 登録(修正が入るまで
+スイート全体は緑のまま、個別チェックが PASS に転じた時点でスイートの終了
+コードが 0 になり WILL_FAIL 反転で ctest が `sprocess_parity` を Failed と
+報告する — その信号で該当チェックを通常スイートへ移設する運用)で始まった。
+
+全 10 件のチェックが最終的に全て修正・移設され(C-2 の TED 増速率較正
+(下表最終行)を最後に、2026-09 に完了)、本スイートは
+**WILL_FAIL を外して通常スイートへ格上げ・退役**した(`CMakeLists.txt` の
+`sprocess_parity` は他の通常テストと同じ `foreach` ループに登録され、
+`WILL_FAIL` プロパティは削除)。`tests/test_sprocess_parity.cpp` 自体は
+削除せず、各チェックの根本原因・修正 PR・移設先を記録した**クローズド
+チェックの履歴インデックス**として残している。併せて現行機能の不変量を
+固定する golden シナリオ `tests/test_golden_flows.cpp`(CTest 名
+`golden_flows`、常時 PASS)を追加済み。
 
 | チェック | タスク ID | 現状 |
 |---|---|---|
@@ -147,16 +157,12 @@ golden シナリオ `tests/test_golden_flows.cpp`(CTest 名 `golden_flows`、常
 | 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | **修正済** → `test_dual_pearson.cpp` へ移設(`profile="dual"` の主峰+チャネリングテール; 解析 1.10e17 vs MC 8.91e17 cm⁻³, 比 0.123 ≥ 0.1。仕様: `C1_implant_moments.md`) |
 | Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | **修正済** → `test_oxidation.cpp` へ移設(Deal-Grove B/A 定数を `ox.dry.*`/`ox.wet.*` として ParamDB 化、既定はビット不変。`ox.massoud.c`/`ox.massoud.l`(既定 OFF、opt-in)で 900℃/10nm 域が比 1.42(要求 >1.10x)。併せて `pressure_atm`/`hcl_frac`/`orient` を `proc::oxidize()` に追加(既定はビット不変)。仕様: `C3_oxidation_calibration.md`) |
 | TED 750-850 ℃ アニールの数値安定性(有限値・総 B 質量保存) | C-2 | **修正済** → `test_ted.cpp` テスト 9 へ移設(根本原因: 1a 陰解のスパイク負値 → クラスタ forward 負値の質量生成。CI/CV 床 + forward/ratio/cl_old 床で修正) |
-| TED 増速率が古典実験帯域内(5〜200x) | C-2 | 未達(修正後 900 ℃/60 s で ~300x に改善、なお文献 10-100x を超過 — 較正課題として残存) |
+| TED 増速率が古典実験帯域内(5〜200x) | C-2 | **修正済** → `test_ted.cpp` テスト 10 へ移設(`step_once_ted` の per-cell 拡散係数増速倍率キャップを `ted.max_dv_scale`(ParamDB、既定 500)として公開・較正。パラメータスキャンで単調関係を確認、900℃/60s で 299x→73.6x(帯域 [5,200]x の中央付近、文献 10-100x にほぼ収まる)。仕様・較正手法の全文書化: `C2_ted_calibration.md`。併せて C-2 の Rs/Xj 抽出 `proc::sheet_resistance`/`proc::junction_depth` を新設) |
 
 W-8 は上記 3 件全て解消し、タスクとして**完了**(`docs/tasks/W8_material_aware_implant.md`)。
 
-**WILL_FAIL 運用**: 修正が入ってあるチェックが PASS に転じると、スイート全体の
-終了コードが変わらない限りは緑のままだが、**全チェック PASS** になった時点で
-exit 0 となり WILL_FAIL 反転で ctest が `sprocess_parity` を **Failed** と報告
-する。個別チェックの進捗は実行ログのサマリ表(`N/3 parity checks passing`)で
-確認し、PASS に転じたチェックは通常スイート(`test_golden_flows` または該当
-`test_<feature>`)へ移設し、残りを本スイートに留める。
+以上で本スイートの全チェックが解消され、`sprocess_parity` は WILL_FAIL を
+外して通常スイートへ移行・退役した(上記見出し参照)。
 
 ### 定量ベンチマーク
 
@@ -168,8 +174,9 @@ PASS)は**公表済みのエンジン非依存な文献値**に対する定量�
 - **Tier A(ハードアサート、現状 23 項目全 PASS)**: 実測の上でエンジンが
   寛大な許容幅(飛程 ±25-30%、厚膜酸化 ±15-25%、拡散駆動は factor-2)内で
   文献値に一致するもの。外部真値に紐づく恒久的な回帰アンカー。
-- **Tier B(大幅未達、`test_sprocess_parity.cpp` の WILL_FAIL 表に追加)**:
-  文献値から大きく明確に外れる項目。上表の C-2 2 件がこれに当たる。
+- **Tier B(大幅未達)**: 文献値から大きく明確に外れる項目。かつては
+  `test_sprocess_parity.cpp` の WILL_FAIL 表で管理していたが、C-2 の TED
+  増速率較正(上表参照)を最後に該当項目が解消し、現在 Tier B は空。
 - **Tier C(INFO 表示のみ、アサートなし)**: 参照値の精度またはモデルの
   適用範囲がハードアサートを正当化しない項目。
 
@@ -182,7 +189,7 @@ PASS)は**公表済みのエンジン非依存な文献値**に対する定量�
 | C | 酸化: dry 1000℃/30・60min(<70 nm 薄膜域) | 同上 | −21〜−36%(τ/Massoud 支配域。`ox.massoud.c`/`.l` opt-in で改善可能だが既定 OFF のためこの値のまま。C-3 参照) |
 | A | B 真性拡散係数(埋め込みマーカ 1000℃/1h の σ² 成長) | Fair 1981: D_B=0.76·exp(−3.46eV/kT) | 比 1.03(factor-2 帯域) |
 | A | B drive-in 接合深さ(1100℃/30min, 背景 1e15) | 同上 + 解析ガウス解 | 1.008 vs 0.955 µm(+5.7%) |
-| C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~500-700x(Tier B でハード帯域化) |
+| C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~68.5x(C-2 較正後。`test_ted.cpp` テスト10でハード帯域[5,200]xアサート化済み) |
 | C | As 電気活性上限 900/1000℃ | Nobili/Solmi(Plummer Ch.7) | 1.90/3.17e20 vs ~2/3e20 cm⁻³ — エンジン自身の固溶度フィットが同一出典由来のため**循環的**、アサート不可 |
 
 **注意(本節の限界)**: 本スイートはあくまで**文献値プロキシ**であり、

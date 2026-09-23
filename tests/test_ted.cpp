@@ -265,6 +265,52 @@ int main() {
     CHECK(std::fabs(tot1 - tot0) < 5e-3 * tot0);
   }
 
+  // --- 10. [C-2] TED enhancement in the classic literature band. Moved from
+  // tests/test_sprocess_parity.cpp once ted.max_dv_scale calibration (see
+  // docs/tasks/C2_ted_calibration.md) brought the measured enhancement from
+  // ~299x down to the [5x, 200x] band around the classic 10-100x
+  // marker-experiment range (Packan & Plummer; Stolk et al. 1997,
+  // 750-810 C short anneals; enhancement only decreases toward 900 C).
+  {
+    DiffuseOpts d;
+    d.temp = 1173.15;  // 900 C
+    d.time = 60;
+    d.verbosity = 0;
+    auto sigma_of = [](const SimState& s) {
+      const auto& f = s.fields.at("B");
+      const double ztop = s.mesh.bbox().hi.z;
+      double m = 0, md = 0, md2 = 0;
+      for (std::size_t i = 0; i < f.size(); ++i) {
+        const double w = f[i] * s.mesh.cell_vol[i];
+        const double dd = ztop - s.mesh.cell_cent[i].z;
+        m += w; md += w * dd; md2 += w * dd * dd;
+      }
+      const double mean = md / m;
+      return std::sqrt(std::max(0.0, md2 / m - mean * mean));
+    };
+    auto make_column = [](double zmax, int nz) {
+      SimState st;
+      proc::mesh_box(st, 0, 0.3e-4, 0, 0.3e-4, 0, zmax, 3, 3, nz);
+      proc::set_region(st, "silicon", -1);
+      return st;
+    };
+    SimState eq = make_column(1.0e-4, 100);
+    proc::implant_gauss(eq, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0,
+                        0, false, "gauss");
+    const double s0 = sigma_of(eq);
+    proc::diffuse(eq, d);
+    const double seq = sigma_of(eq);
+    SimState td = make_column(1.0e-4, 100);
+    proc::implant_gauss(td, "B", 1e14, 0, 0.05e-4, 0.02e-4, 0, false, 0, 0, 0,
+                        0, true, "gauss");
+    proc::diffuse_ted(td, d);
+    const double sted = sigma_of(td);
+    const double enh = (sted * sted - s0 * s0) / (seq * seq - s0 * s0);
+    std::printf("TED enhancement (classic band, 900C/60s): %.1fx "
+                "(want 5-200x, lit 10-100x @750-810C)\n", enh);
+    CHECK(std::isfinite(enh) && enh >= 5.0 && enh <= 200.0);
+  }
+
   std::printf("ted tests passed\n");
   return 0;
 }

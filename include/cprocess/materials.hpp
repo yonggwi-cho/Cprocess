@@ -175,6 +175,14 @@ double solid_solubility(const Dopant& d, double temp_k);
 //   C_act = min(C, C_ss(T));  C_ss == 0 (no fit) means "no clamp".
 double active_concentration(const Dopant& d, double conc, double temp_k);
 
+// C-2: Irvin-curve-style majority-carrier mobility [cm^2/(V.s)] as a function
+// of total ionized-impurity concentration N [cm^-3] (Caughey-Thomas /
+// Masetti et al. (1983) low-field mobility fit for Si at 300 K -- room
+// temperature is the SProcess/Irvin-curve convention for Rs extraction, not
+// the anneal temperature). `donor_type` selects electron (true) vs hole
+// (false) majority-carrier constants. See sheet_resistance() (process.hpp).
+double irvin_mobility_cm2vs(double n_cm3, bool donor_type);
+
 // ── Self-interstitial point-defect model (for transient enhanced diffusion) ──
 // All values are order-of-magnitude literature fits for silicon; they set the
 // TED time-scale and magnitude and can be tuned. Isothermal, spatially uniform.

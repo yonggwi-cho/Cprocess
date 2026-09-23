@@ -3046,6 +3046,121 @@ std::vector<std::pair<double, double>> profile1d(const SimState& st,
   return out;
 }
 
+// C-2: helper -- silicon-only per-cell active concentration for `symbol`,
+// using st.last_temp (same convention as active_field()).
+namespace {
+bool is_silicon_cell(const SimState& st, std::size_t ci) {
+  auto it = st.region_material.find(st.mesh.cell_region[ci]);
+  return it == st.region_material.end() || lower(it->second) == "silicon";
+}
+}  // namespace
+
+double sheet_resistance(const SimState& st, const std::string& species,
+                        double z0_cm, double z1_cm, std::ostream* log) {
+  const Dopant* d = dopant_or_throw(species);
+  auto it = st.fields.find(d->symbol);
+  if (it == st.fields.end())
+    throw std::runtime_error("no field: " + species);
+  const auto& conc = it->second;
+  const auto bb = st.mesh.bbox();
+  const double top = bb.hi.z;
+  // z0_cm/z1_cm are depths below the top surface (cm); z1_cm<=z0_cm
+  // (including the default 0,0) means "whole column".
+  const bool have_range = z1_cm > z0_cm;
+  const bool donor = (d->type == DopType::donor);
+  const double top_area = std::max(bb.hi.x - bb.lo.x, 1e-30) *
+                          std::max(bb.hi.y - bb.lo.y, 1e-30);
+  double sum_qNmu = 0.0;  // sum(N_act * mu * vol) [cm^-3 * cm^2/Vs * cm^3]
+  const std::size_t nc = st.mesh.cells.size();
+  for (std::size_t ci = 0; ci < nc && ci < conc.size(); ++ci) {
+    if (!is_silicon_cell(st, ci)) continue;
+    const double z = st.mesh.cell_cent[ci].z;
+    const double depth = top - z;
+    if (have_range && (depth < z0_cm || depth > z1_cm)) continue;
+    const double act = active_concentration(*d, conc[ci], st.last_temp);
+    const double mu = irvin_mobility_cm2vs(act, donor);
+    sum_qNmu += act * mu * st.mesh.cell_vol[ci];
+  }
+  const double integ = sum_qNmu / top_area;  // N*mu integrated over depth [cm^-1 * cm^2/Vs]
+  if (integ <= 0)
+    throw std::runtime_error("sheet_resistance: no active " + d->symbol +
+                             " found in range");
+  const double q = 1.602176634e-19;
+  const double rs = 1.0 / (q * integ);
+  if (log)
+    *log << "[sheet_resistance] " << d->symbol << ": Rs=" << rs
+         << " Ohm/sq over depth range\n";
+  return rs;
+}
+
+double junction_depth(const SimState& st, const std::string& species,
+                      double bg_level_cm3, std::ostream* log) {
+  const Dopant* d = dopant_or_throw(species);
+  auto it = st.fields.find(d->symbol);
+  if (it == st.fields.end())
+    throw std::runtime_error("no field: " + species);
+  const auto bb = st.mesh.bbox();
+  const double top = bb.hi.z;
+  const double sign = (d->type == DopType::acceptor) ? -1.0 : 1.0;
+
+  // Bin by depth (z-cell-centroid), averaging across xy so the result is
+  // robust for structures uniform in x/y (the common column-mesh case) and
+  // a reasonable representative profile otherwise.
+  std::map<double, std::pair<double, double>> bydepth;  // depth -> (sum_net, count)
+  bool have_other_dopant = false;
+  for (std::size_t ci = 0; ci < st.mesh.cells.size(); ++ci) {
+    if (!is_silicon_cell(st, ci)) continue;
+    const double depth = top - st.mesh.cell_cent[ci].z;
+    double net = 0.0;
+    for (const auto& [sym, f] : st.fields) {
+      const Dopant* dd = find_dopant(sym);
+      if (!dd || dd->type == DopType::neutral) continue;
+      if (ci >= f.size()) continue;
+      const double act = active_concentration(*dd, f[ci], st.last_temp);
+      if (sym != d->symbol) have_other_dopant = true;
+      net += (dd->type == DopType::donor) ? act : -act;
+    }
+    auto& e = bydepth[depth];
+    e.first += net;
+    e.second += 1.0;
+  }
+  std::vector<std::pair<double, double>> prof;  // (depth, mean_net)
+  prof.reserve(bydepth.size());
+  for (auto& [depth, sc] : bydepth) prof.emplace_back(depth, sc.first / sc.second);
+  std::sort(prof.begin(), prof.end());
+
+  if (!have_other_dopant) {
+    // Single-species fallback: depth where active concentration of this
+    // species drops below bg_level_cm3.
+    for (std::size_t i = 0; i + 1 < prof.size(); ++i) {
+      const double n0 = sign * prof[i].second, n1 = sign * prof[i + 1].second;
+      if (n0 >= bg_level_cm3 && n1 < bg_level_cm3) {
+        const double t = (bg_level_cm3 - n0) / (n1 - n0);
+        const double xj = prof[i].first + t * (prof[i + 1].first - prof[i].first);
+        if (log) *log << "[junction_depth] " << d->symbol << ": xj=" << xj
+                      << " cm (background fallback)\n";
+        return xj;
+      }
+    }
+    if (log)
+      *log << "[junction_depth] " << d->symbol << ": no crossing found\n";
+    return 0.0;
+  }
+
+  for (std::size_t i = 0; i + 1 < prof.size(); ++i) {
+    const double n0 = prof[i].second, n1 = prof[i + 1].second;
+    if ((n0 > 0) != (n1 > 0)) {
+      const double t = n0 / (n0 - n1);
+      const double xj = prof[i].first + t * (prof[i + 1].first - prof[i].first);
+      if (log)
+        *log << "[junction_depth] " << d->symbol << ": xj=" << xj << " cm\n";
+      return xj;
+    }
+  }
+  if (log) *log << "[junction_depth] " << d->symbol << ": no crossing found\n";
+  return 0.0;
+}
+
 std::vector<std::vector<std::pair<double, double>>> load_gds(
     const std::string& path, int layer, std::ostream* log) {
   auto polys = read_gds(path, layer);

@@ -548,6 +548,26 @@ class Simulation:
         c = np.array([p[1] for p in pairs])
         return z, c
 
+    # -- extraction (C-2) --------------------------------------------------------
+    def sheet_resistance(self, species: str, z0: float = 0.0, z1: float = 0.0) -> float:
+        """Sheet resistance [Ohm/sq] of `species` over the depth window
+        [z0, z1] um below the surface (z1<=z0, the default, selects the whole
+        silicon column). Irvin-curve-style (Caughey-Thomas/Masetti) mobility
+        model at 300K applied to the solid-solubility-clamped active
+        concentration."""
+        rs, log = _c.proc_sheet_resistance(self._st, species, z0 * UM, z1 * UM)
+        self._emit(log)
+        return rs
+
+    def junction_depth(self, species: str, bg_level: float = 1e15) -> float:
+        """Junction depth [um] below the surface: the net-active-dopant
+        sign-crossing depth (or, with no opposing dopant field present, the
+        depth where `species`'s active concentration falls below `bg_level`
+        cm^-3)."""
+        xj, log = _c.proc_junction_depth(self._st, species, float(bg_level))
+        self._emit(log)
+        return xj / UM
+
     # -- parameter overrides (P1-10) --------------------------------------------
     def set_param(self, key: str, value: float) -> "Simulation":
         """Override a physical parameter (raw core units: cm^2/s, eV, cm^-3,
