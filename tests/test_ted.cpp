@@ -266,8 +266,11 @@ int main() {
   }
 
   // --- 10. [C-2] TED enhancement in the classic literature band. Moved from
-  // tests/test_sprocess_parity.cpp once ted.max_dv_scale calibration (see
-  // docs/tasks/C2_ted_calibration.md) brought the measured enhancement from
+  // tests/test_sprocess_parity.cpp once the B cluster (BIC) dissociation
+  // barrier cl.b.eb was recalibrated 2.7 -> 2.8 eV (see
+  // docs/tasks/C2_ted_calibration.md -- a direct cap on the TED diffusivity
+  // multiplier was tried first but broke test_rta's ramp-anneal mass
+  // conservation and was reverted), bringing the measured enhancement from
   // ~299x down to the [5x, 200x] band around the classic 10-100x
   // marker-experiment range (Packan & Plummer; Stolk et al. 1997,
   // 750-810 C short anneals; enhancement only decreases toward 900 C).

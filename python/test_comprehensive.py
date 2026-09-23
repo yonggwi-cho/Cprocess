@@ -887,6 +887,43 @@ def test_activation_python():
 
 
 # ---------------------------------------------------------------------------
+def test_extract_python():
+    """C-2: Simulation.sheet_resistance()/.junction_depth()."""
+    print("test_extract_python")
+    sim = cp.Simulation()
+    sim.mesh(x=0.3, y=0.3, z=5.0, nx=3, ny=3, nz=100)
+    sim.region("silicon")
+    sim.implant("B", dose=1e15, rp=0.03, drp=0.015)
+    sim.diffuse(time=10, temp=1000)
+
+    rs = sim.sheet_resistance("B")
+    check(np.isfinite(rs) and rs > 0, "sheet_resistance finite and positive")
+
+    xj = sim.junction_depth("B")
+    check(np.isfinite(xj) and 0 < xj < 5.0, "junction_depth within the column")
+
+    # Higher dose -> lower Rs (more active carriers).
+    sim2 = cp.Simulation()
+    sim2.mesh(x=0.3, y=0.3, z=5.0, nx=3, ny=3, nz=100)
+    sim2.region("silicon")
+    sim2.implant("B", dose=1e17, rp=0.03, drp=0.015)
+    sim2.diffuse(time=10, temp=1000)
+    rs2 = sim2.sheet_resistance("B")
+    check(rs2 < rs, "higher dose -> lower Rs")
+
+    # Depth window: whole-column Rs <= narrow-window Rs.
+    rs_window = sim.sheet_resistance("B", z0=0.0, z1=0.05)
+    check(rs_window >= rs, "narrower window -> Rs no lower than full column")
+
+    # Unknown species raises.
+    try:
+        sim.sheet_resistance("Xx")
+        raise AssertionError("expected exception for unknown species")
+    except RuntimeError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 def test_rta_ramp_python():
     """Simulation.diffuse(ramp=...) runs a piecewise-linear RTA temperature
     profile and validates the ramp[0][0] == 0 / temp-or-ramp requirements."""
@@ -1719,4 +1756,5 @@ if __name__ == "__main__":
     test_silicide_python()
     test_stress_physics_python()
     test_sper_python()
+    test_extract_python()
     print("\nall comprehensive Simulation tests passed")

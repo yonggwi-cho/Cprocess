@@ -157,7 +157,7 @@ SProcess 的に正しい挙動をアサートし、**WILL_FAIL TRUE** 登録(修
 | 解析 Pearson の 2Rp でのチャネリングテール (MC の 1/10 以内) | C-1 | **修正済** → `test_dual_pearson.cpp` へ移設(`profile="dual"` の主峰+チャネリングテール; 解析 1.10e17 vs MC 8.91e17 cm⁻³, 比 0.123 ≥ 0.1。仕様: `C1_implant_moments.md`) |
 | Massoud 薄膜酸化促進 (Deal-Grove 比 >1.10x) | C-3 | **修正済** → `test_oxidation.cpp` へ移設(Deal-Grove B/A 定数を `ox.dry.*`/`ox.wet.*` として ParamDB 化、既定はビット不変。`ox.massoud.c`/`ox.massoud.l`(既定 OFF、opt-in)で 900℃/10nm 域が比 1.42(要求 >1.10x)。併せて `pressure_atm`/`hcl_frac`/`orient` を `proc::oxidize()` に追加(既定はビット不変)。仕様: `C3_oxidation_calibration.md`) |
 | TED 750-850 ℃ アニールの数値安定性(有限値・総 B 質量保存) | C-2 | **修正済** → `test_ted.cpp` テスト 9 へ移設(根本原因: 1a 陰解のスパイク負値 → クラスタ forward 負値の質量生成。CI/CV 床 + forward/ratio/cl_old 床で修正) |
-| TED 増速率が古典実験帯域内(5〜200x) | C-2 | **修正済** → `test_ted.cpp` テスト 10 へ移設(`step_once_ted` の per-cell 拡散係数増速倍率キャップを `ted.max_dv_scale`(ParamDB、既定 500)として公開・較正。パラメータスキャンで単調関係を確認、900℃/60s で 299x→73.6x(帯域 [5,200]x の中央付近、文献 10-100x にほぼ収まる)。仕様・較正手法の全文書化: `C2_ted_calibration.md`。併せて C-2 の Rs/Xj 抽出 `proc::sheet_resistance`/`proc::junction_depth` を新設) |
+| TED 増速率が古典実験帯域内(5〜200x) | C-2 | **修正済** → `test_ted.cpp` テスト 10 へ移設(B クラスタ(BIC)の解離障壁 `cl.b.eb` を 2.7→2.8 eV に較正。拡散係数増速のキャップ自体を直接いじる案は `test_rta.cpp` のランプ質量保存を破ったため却下、代わりに B 固有の反応速度定数のみに効くこのノブを採用。900℃/60s で 299x→107.8x(帯域 [5,200]x 内、文献 10-100x にほぼ収まる)。既存 test_dopant_clusters/test_rta とも非回帰確認済み。仕様・較正手法の全文書化(却下案の記録含む): `C2_ted_calibration.md`。併せて C-2 の Rs/Xj 抽出 `proc::sheet_resistance`/`proc::junction_depth` を新設) |
 
 W-8 は上記 3 件全て解消し、タスクとして**完了**(`docs/tasks/W8_material_aware_implant.md`)。
 
@@ -189,7 +189,7 @@ PASS)は**公表済みのエンジン非依存な文献値**に対する定量�
 | C | 酸化: dry 1000℃/30・60min(<70 nm 薄膜域) | 同上 | −21〜−36%(τ/Massoud 支配域。`ox.massoud.c`/`.l` opt-in で改善可能だが既定 OFF のためこの値のまま。C-3 参照) |
 | A | B 真性拡散係数(埋め込みマーカ 1000℃/1h の σ² 成長) | Fair 1981: D_B=0.76·exp(−3.46eV/kT) | 比 1.03(factor-2 帯域) |
 | A | B drive-in 接合深さ(1100℃/30min, 背景 1e15) | 同上 + 解析ガウス解 | 1.008 vs 0.955 µm(+5.7%) |
-| C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~68.5x(C-2 較正後。`test_ted.cpp` テスト10でハード帯域[5,200]xアサート化済み) |
+| C | TED 増速率(900℃/60s) | Packan/Stolk マーカ実験 10-100x @750-810℃ | ~107.8x(C-2 較正後、`test_ted.cpp` の 3x3 メッシュでの測定。`test_ted.cpp` テスト10でハード帯域[5,200]xアサート化済み。本ベンチのメッシュ(2x2)では~700x — メッシュ感度、詳細は該当コメント) |
 | C | As 電気活性上限 900/1000℃ | Nobili/Solmi(Plummer Ch.7) | 1.90/3.17e20 vs ~2/3e20 cm⁻³ — エンジン自身の固溶度フィットが同一出典由来のため**循環的**、アサート不可 |
 
 **注意(本節の限界)**: 本スイートはあくまで**文献値プロキシ**であり、

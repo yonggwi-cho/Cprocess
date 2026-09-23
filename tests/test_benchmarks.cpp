@@ -312,12 +312,17 @@ static void bench_junction_depth() {
 }
 
 // ---------------------------------------------------------------------------
-// 6. TED enhancement magnitude (Tier C here; hard band lives in the parity
-// suite, C-2). B marker + damage, 900 C / 60 s; time-averaged Dt enhancement
-// (sigma_ted^2 - sigma0^2)/(sigma_eq^2 - sigma0^2) vs the classic 10-100x
-// marker-experiment range (Packan/Plummer; Stolk 1997 — measured at
-// 750-810 C, order-of-magnitude reference only). Measured today: ~706x.
-// (The 800 C case currently produces NaN — parity check C-2.)
+// 6. TED enhancement magnitude (Tier C here; the hard [5,200]x band check
+// now lives in tests/test_ted.cpp, C-2). B marker + damage, 900 C / 60 s;
+// time-averaged Dt enhancement (sigma_ted^2 - sigma0^2)/(sigma_eq^2 -
+// sigma0^2) vs the classic 10-100x marker-experiment range (Packan/Plummer;
+// Stolk 1997 -- measured at 750-810 C, order-of-magnitude reference only).
+// This bench uses a coarser (2x2 lateral) mesh than test_ted's calibration
+// setup, so its measured value differs numerically (~700x here vs ~108x on
+// the finer mesh) even at the same cl.b.eb=2.8 eV calibration -- expected
+// mesh sensitivity of this synthetic sigma-growth proxy, not a regression;
+// see docs/tasks/C2_ted_calibration.md. Still Tier C / INFO-only (no assert)
+// since the metric itself, not just the value, is a coarse proxy.
 // ---------------------------------------------------------------------------
 static void bench_ted() {
   DiffuseOpts d;

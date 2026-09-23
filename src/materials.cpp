@@ -448,7 +448,12 @@ ClusterParams cluster_params(const std::string& symbol, double temp_k,
   if (symbol == "B") {
     p.kf = db.get("cl.b.kf", 1e-3);
     const double nu0 = db.get("cl.b.nu0", 1e13);
-    const double eb = db.get("cl.b.eb", 2.7);
+    // C-2: Eb raised 2.7 -> 2.8 eV (see docs/tasks/C2_ted_calibration.md).
+    // The 2.7 eV value (P2-2) left the classic-band TED-enhancement parity
+    // check at ~299x (vs. the 5-200x target); 2.8 eV lands it at ~108x
+    // while keeping the 900C/10min dissolution recovery (test_dopant_
+    // clusters.cpp) and other existing thresholds intact (measured below).
+    const double eb = db.get("cl.b.eb", 2.8);
     p.kr = nu0 * std::exp(-eb / kt);
     p.pd_frac = 1.0 / 3.0;  // B3I: 1 interstitial captured per 3 B atoms
     p.uses_v = false;

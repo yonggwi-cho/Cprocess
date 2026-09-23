@@ -1267,27 +1267,6 @@ void DiffusionSolver::step_once_ted(
     const double dEg_coef = db.get("sige.dEg_coef", 0.4);
     const bool sige_on = s_ge >= 0 && db.get("sige.couple", 1.0) != 0.0;
 
-    // C-2 TED enhancement calibration: cap the per-cell CI/CI* (or CV/CV*)
-    // diffusivity-enhancement multiplier. This was previously an
-    // effectively-inert numerical safety clamp at 1e4 (never engaged in
-    // practice). Measured (see docs/tasks/C2_ted_calibration.md): a short
-    // damage-seeded "+1" transient at 900 C reaches per-cell CI/CI* peaks in
-    // the 1e3-1e4 range for a few substeps near the implant spike, which
-    // integrates (via Dt = integral of D_eff dt) into a time-averaged
-    // marker-spread enhancement around 300x -- roughly 3x the classic
-    // Packan & Plummer / Stolk et al. (1997) 10-100x marker-experiment
-    // range. ted.max_dv_scale caps that per-cell spike directly (a
-    // supersaturation-ratio ceiling is itself a standard TED-model device,
-    // e.g. Cowern's clustering-limited model). Default 500 was chosen from a
-    // parameter scan (docs/tasks/C2_ted_calibration.md): the classic-band
-    // parity check's measured enhancement factor is a clean, monotonically
-    // increasing function of this cap (cap=10000/inert -> 299x; cap=40 ->
-    // 8.7x; cap=1000 -> 113x); 500 lands the check at ~74x, mid-band of the
-    // cited 10-100x literature range with margin on both sides of the
-    // checked [5,200]x band. test_ted's MC-damage-seeded checks measure
-    // peak per-cell ratios well under this cap and are unaffected.
-    const double kTedMaxScale = db.get("ted.max_dv_scale", 500.0);
-
     for (int picard = 1; picard <= o.max_picard; ++picard) {
       for (int i = 0; i < nc; ++i) {
         if (mat_[i] != kMatSi) { nni[i] = 1.0; continue; }
@@ -1329,7 +1308,7 @@ void DiffusionSolver::step_once_ted(
           }
           double scale = fi_ov[s] * (CI[i] / pdp.ci_star) +
                          (1.0 - fi_ov[s]) * (CV[i] / pdp.cv_star);
-          scale = std::min(scale, kTedMaxScale);
+          scale = std::min(scale, 1e4);
           dv *= scale;
           if (o.pressure && vact_s != 0.0) {  // P3-e, applied after CI/CV scale
             const double arg = -(*o.pressure)[i] * vact_s / (kBoltzmannErg * T);
