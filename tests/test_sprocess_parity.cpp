@@ -137,20 +137,25 @@ static SimState make_column(double zmax, int nz, std::ostream* log) {
 
 
 // [C-2] TED enhancement magnitude: FIXED (moved to tests/test_ted.cpp,
-// test_ted_enhancement_classic_band). Root cause of the over-enhancement:
-// step_once_ted's per-cell diffusivity-enhancement multiplier
-// (scale = fi*(CI/CI*) + (1-fi)*(CV/CV*)) had only an inert 1e4 numerical
-// safety cap. Exposed as ted.max_dv_scale (ParamDB) and recalibrated to 500
-// (from a parameter scan documented in docs/tasks/C2_ted_calibration.md):
-// the classic-band check's measured enhancement factor is a clean,
-// monotonic function of this cap, and 500 lands it at ~74x -- mid-band of
-// the cited 10-100x literature range (Packan & Plummer; Stolk et al. 1997).
-// This was the last remaining check in this suite (parity now 0/0 --
-// retired below per the harness's own final-summary comment: "remove
-// WILL_FAIL and retire this suite into the regular tests"). See
-// docs/tasks/README.md for the closing summary of the SProcess-parity
-// section and docs/tasks/C2_ted_calibration.md for the full calibration
-// writeup (including the C-2 Rs/Xj extraction functions added alongside).
+// test_ted_enhancement_classic_band). Root cause of the over-enhancement was
+// investigated via several global point-defect-kinetics knobs (including an
+// initial attempt exposing step_once_ted's inert 1e4 diffusivity-enhancement
+// safety cap as ted.max_dv_scale, recalibrated to 500) -- that cap approach
+// gave the right classic-band number in isolation but broke test_rta's
+// ramp-anneal mass conservation (0.36% -> 5.5-7% error) at every cap value
+// tried, so it was reverted. The adopted fix instead calibrates the B
+// cluster (BIC) dissociation barrier cl.b.eb (materials.cpp), 2.7 -> 2.8 eV
+// -- B-specific and confined to the clustering-consumption pathway, so it
+// doesn't touch the general diffusivity-enhancement machinery RTA depends
+// on. At 900C/60s the measured enhancement factor moved 298.9x -> 107.8x,
+// mid-band of the check's [5,200]x window and close to the cited 10-100x
+// literature range (Packan & Plummer; Stolk et al. 1997). This was the last
+// remaining check in this suite (parity now 0/0 -- retired below per the
+// harness's own final-summary comment: "remove WILL_FAIL and retire this
+// suite into the regular tests"). See docs/tasks/README.md for the closing
+// summary of the SProcess-parity section and docs/tasks/C2_ted_calibration.md
+// for the full calibration writeup, including the rejected cap approach and
+// the C-2 Rs/Xj extraction functions added alongside.
 
 // ---------------------------------------------------------------------------
 int main() {
