@@ -154,8 +154,14 @@
 
 ### 3.1 コマンド/スクリプト面
 
-- テキストデッキ: **16 コマンド**(mesh/region/init/implant/photo/mask/strip/bc/diffuse/oxidize/epitaxy/deposit/silicide/save/print/stop)
-- Python `Simulation`: **37 メソッド**(+pybind 44)— etch/etch_rate/deposit_conformal/oxidize_2d/sper/mechanics/refine/mask_polygon/load_gds/ramp/set_param/save_state/export_device 等は **Python 専用でデッキから呼べない**
+- テキストデッキ: 本書作成時点 **16 コマンド**。**✅ W-3 (`5e5524e`) で拡張済み**:
+  `etch`/`oxidize2d`/`sper`/`mechanics`/`refine`/`pdbset`/`save_state`/
+  `load_state`/`export_device` を追加し、現在 **25 コマンド**
+  (mesh/region/init/implant/photo/mask/strip/bc/diffuse/oxidize/oxidize2d/
+  epitaxy/deposit/etch/silicide/sper/mechanics/refine/pdbset/save/save_state/
+  load_state/export_device/print/stop)。`diffuse ramp=` でランプも対応。
+- Python `Simulation`: 本書作成時点 **37 メソッド**。現在は約 46 個の公開メソッド
+  (機能追加とともに増加中)。デッキ専用機能とのギャップは W-3 でほぼ解消。
 - SProcess Tcl の制御構文(変数/if/foreach)相当はデッキになし(Python が代替)
 
 | 機能 | SProcess | Cprocess | 深刻度 |
