@@ -41,6 +41,20 @@ Cprocess は同じ「工程機能の集合」を持ちながら、**構造の表
 
 ## 2. 直接原因(コードレベル)
 
+> **✅ 2026-09-23 追記(W-2 文書同期): 本節は歴史的記録**。ここで指摘した
+> 2 欠陥(レジストの不可視性/メッシュ全域 Si 輸送)は W-7(`docs/tasks/
+> W7_structure_inspection.md`)と W-8(`docs/tasks/W8_material_aware_implant.md`)
+> で是正済み。W-7 は `proc::save_stack`/`save(include_stack=)`/
+> `Simulation.resist_mask()` を追加し、save_state/export_device の throw を
+> 警告+続行へ緩和した(`test_photo.cpp`, `test_state_io.cpp`)。W-8 は
+> `material_ids(st)` → TargetMaterial テーブルを一般 MC 経路と解析注入の
+> 両方に常時配線し、STI/スクリーン酸化膜越しの注入が bare Si と有意に
+> 異なる結果を示すことを `test_implant_materials.cpp` で固定した
+> (screen-oxide 50nm: bare 145.0nm → 102.5nm、STI 遮蔽ドーズ比 0.086)。
+> 表現の分裂そのもの(§1 の 5 表現)を解消する A-7(構造モデル統一)は
+> 依然未着手であり、下記の直接原因分析・根本原因分析(§3)は歴史的経緯の
+> 記録として有効なまま残す。
+
 1. **`photo()` の初期設計スコープ**(コミット `f3906e5`, 2026-06-18):
    コミットメッセージが明記する通り、photo/mask/strip は
    「MC 注入の幾何窓を物理レジスト透過に置き換える」**注入の付属機能**として
@@ -104,15 +118,18 @@ Cprocess は同じ「工程機能の集合」を持ちながら、**構造の表
 
 ### 4.1 是正(実装計画 v2 への追加タスク)
 
-- **W-7: 途中構造の検査機能**(Sprint 1 へ追加)
+- **W-7: 途中構造の検査機能**(Sprint 1 へ追加) — **✅ 完了**
   `save_stack()` / `save(include_stack=)` によるレジスト込み VTU 出力、
   Python `resist_mask()` アクセサ、save_state/export_device の throw を
   警告+選択動作へ緩和。工数小(既存 write_vtu 流用)。
-- **W-8: メッシュ材料を考慮した注入輸送**(Sprint 1 へ追加)
+  仕様/実績: `docs/tasks/W7_structure_inspection.md`。
+- **W-8: メッシュ材料を考慮した注入輸送**(Sprint 1 へ追加) — **✅ 完了**
   `material_ids(st)`(既存)→ TargetMaterial テーブル写像を常時 MC に渡す。
   レジストスタックとの合成(スタック側テーブルにも oxide/nitride を追加)。
   解析注入にはカラム毎スクリーニング補正(上層材料の実効 Si 換算深さ)。
   受入: スクリーン酸化膜 20 nm 越し B 30 keV の Rp シフト、STI 構造 well 注入。
+  仕様/実績: `docs/tasks/W8_material_aware_implant.md`
+  (`docs/tasks/README.md` の sprocess_parity 表: 3 件全て修正済み)。
 - **A-7: 構造モデル統一(structure-first 化)**(Sprint 4〜、段階実施)
   最終形は「レジストを本体メッシュの材料として扱い(MatId に resist 追加)、
   photo/mask を deposit/etch の特殊形に再定義。レベルセット/カラム高さは

@@ -3,6 +3,29 @@
 作成日: 2026-07-14 / 前提: HEAD `e3ef2bb`(全初代ロードマップ完了 + 総合評価 v2)
 根拠: `docs/sentaurus_gap_analysis_v2.md` の残存ギャップ 14 項目(3 群)
 
+## 状態表(2026-09-23 W-2 文書同期時点、HEAD `b2a66b3`)
+
+| タスク | 状態 | commit | 備考 |
+|---|---|---|---|
+| W-1 sprocess.py 変換器 | ✅ 完了 | `79106fe` | oxidation/deposit/etch/silicide/pdbSet 対応、8 種ドーパント |
+| W-3 デッキ/Python API 同期 | ✅ 完了 | `5e5524e` | etch/pdbset 等デッキコマンド追加、bbox() µm 修正 |
+| W-4 既定スレッド数抑制の解除 | ✅ 完了 | `d8f275f` | `CPROCESS_THREADS` 明示制御 |
+| W-7 途中構造の検査機能 | ✅ 完了 | `421356d` | save_stack/resist_mask、`docs/tasks/W7_structure_inspection.md` |
+| W-8 材料考慮注入輸送 | ✅ 完了 | `c7f64b9`(+`13d0bbb`) | STI/スクリーン酸化膜遮蔽を含む 3 件全パリティ解消、`docs/tasks/W8_material_aware_implant.md` |
+| W-2 陳腐化文書の更新 | ✅ 完了(本書) | (本コミット) | `docs/tasks/W2_documentation_sync.md` |
+| GF golden flow シナリオテスト | ✅ 完了 | (W-8 系コミット群) | `tests/test_golden_flows.cpp`、常時 PASS |
+| C-1 注入モーメント表 + dual-Pearson | ✅ 完了 | `d8f68e7`(+`b2a66b3`) | 1 keV〜3 MeV、`profile="dual"`、`docs/tasks/C1_implant_moments.md` |
+| C-3 酸化の薄膜補正・雰囲気依存 | ✅ 完了 | `484ce4d` | Massoud opt-in、DG 係数 ParamDB 化、`docs/tasks/C3_oxidation_calibration.md` |
+| C-2 クラスタ/活性化校正 | 🟡 進行中 | `b7112bd`(TED 数値安定性のみ) | 750-850℃ 数値破綻は修正済み。Eb 再校正・P/Sb/In 拡張・TED 増速率の文献帯域整合(sprocess_parity 表の残存 1 件)・sheet_resistance()/junction_depth() は未着地。並行実行中のため、最新状況は `git log --oneline \| grep -i "C-2:"` で確認 |
+| W-5 AMG・ブロック解法の主経路統合 | ⬜ 未着手 | — | Sprint 2、W-4 完了済みのため着手可能 |
+| W-6 coarsen 配線 + 自動リメッシュ | ⬜ 未着手 | — | Sprint 2、W-5 後 |
+| A-1〜A-7 | ⬜ 未着手 | — | Sprint 4 以降 |
+
+Sprint 1(W-1/W-2/W-3/W-4/W-7/W-8 + GF)と Sprint 3 の C-1/C-3 が完了し、
+残るは Sprint 2(W-5/W-6)、C-2 の校正仕上げ、Sprint 4 以降の A 群である。
+詳細な残存ギャップの一覧・優先順位は `docs/sentaurus_gap_analysis_v2.md`
+(本更新で状態注記済み)を参照。
+
 本書は初代 `IMPLEMENTATION_PLAN.md` の後継である。運用は初代と同一:
 本書で計画を確定し、**着手時に各タスクを `docs/tasks/` の個別仕様書
 (6 節形式: 目的/現状コード/実装手順/テスト仕様/DoD/やらないこと)へ展開**してから
